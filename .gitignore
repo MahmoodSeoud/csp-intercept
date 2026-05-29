@@ -1,0 +1,23 @@
+# build output
+build/
+*.o
+*.a
+*.so
+
+# local CSH APM install target
+local/
+*.bin
+
+# stray npm artifacts (accidental `npm install bun` — bun is global via brew now;
+# safe to delete: rm -rf node_modules package.json package-lock.json)
+node_modules/
+package.json
+package-lock.json
+
+# local-only notes (private team internals / unreported issues)
+NOTES.local.md
+
+# editor / OS
+.DS_Store
+compile_commands.json
+.cache/
