@@ -99,6 +99,23 @@ char * keyarg = NULL;
 /* Buffer to hold the secret key. 41 is the length of a z85-encoded CURVE key plus 1 for the null terminator. */
 char sec_key[CURVE_KEYLEN] = {0};
 
+/* Count of wire frames rejected for exceeding the packet buffer (see below). Defined
+ * unconditionally because the capture path (task_capture) shares the same guard. */
+static unsigned long long g_malformed_frames = 0;
+
+/* Largest wire frame we can copy into the single reused csp_packet_t before its data
+ * buffer overflows. csp_id_setup_rx backs frame_begin HEADER_SIZE bytes into the
+ * packet header, so the writable span from frame_begin is sizeof(data) + HEADER_SIZE
+ * -- this mirrors the upstream zmqhub RX allocation (csp_if_zmqhub.c). Frames larger
+ * than this are non-CSP / malformed; reject them rather than smash the heap (TODOS#4:
+ * an unguarded memcpy of a wire-controlled length into a fixed buffer is a heap
+ * overflow the instant a non-CSH publisher / real-pass replay / tc-netem attaches). */
+static int proxy_frame_fits(int datalen) {
+    int header_size = (csp_conf.version == 2) ? 6 : 4;
+    return datalen >= 0 &&
+           datalen <= (int)sizeof(((csp_packet_t *)0)->data) + header_size;
+}
+
 /* Read one event off the monitor socket; return value and address
 by reference, if not null, and event number by value. Returns -1
 in case of error. */
@@ -279,6 +296,12 @@ static void * task_capture(void *arg) {
             printf("ZMQ: Too short datalen: %u\n", datalen);
             while(zmq_msg_recv(&msg, subscriber, ZMQ_NOBLOCK) > 0)
                 zmq_msg_close(&msg);
+            continue;
+        }
+        if (!proxy_frame_fits(datalen)) {
+            printf("ZMQ: oversized datalen %d, dropping malformed frame\n", datalen);
+            g_malformed_frames++;
+            zmq_msg_close(&msg);
             continue;
         }
 
@@ -545,8 +568,8 @@ static void proxy_on_sigint(int sig) {
         fclose(g_drop_log);
         g_drop_log = NULL;
     }
-    printf("\n[zmqproxy-lossy] kept=%llu dropped=%llu delay-drops=%llu\n",
-           g_kept, g_drops, g_delay_drops);
+    printf("\n[zmqproxy-lossy] kept=%llu dropped=%llu delay-drops=%llu malformed=%llu\n",
+           g_kept, g_drops, g_delay_drops, g_malformed_frames);
     exit(0);
 }
 
@@ -634,6 +657,11 @@ void zmq_proxy_lossy() {
             /* Simulate half duplex on target node */
             if(hdx_node){
                 int datalen = zmq_msg_size(&msg);
+                if (!proxy_frame_fits(datalen)) {
+                    g_malformed_frames++;
+                    zmq_msg_close(&msg);
+                    continue;
+                }
 
                 /* Copy to packet */
                 csp_id_setup_rx(packet);
@@ -691,8 +719,15 @@ void zmq_proxy_lossy() {
             int drop = 0;
             if (match_dport >= 0) {
                 int datalen = zmq_msg_size(&msg);
+                if (!proxy_frame_fits(datalen)) {
+                    /* Can't parse a frame that won't fit the buffer; reject it rather
+                     * than overflow. A malformed frame is not a measurement candidate,
+                     * so it is dropped (not forwarded) and counted, never logged. */
+                    g_malformed_frames++;
+                    zmq_msg_close(&msg);
+                    continue;
+                }
                 csp_id_setup_rx(packet);
-                /* TODOS#4: no upper-bound guard on datalen (accepted risk, closed testbed) */
                 memcpy(packet->frame_begin, zmq_msg_data(&msg), datalen);
                 packet->frame_length = datalen;
                 csp_id_strip(packet);

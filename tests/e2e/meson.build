@@ -12,6 +12,12 @@ ci_sub = executable('ci_sub', 'ci_sub.c',
   dependencies: [e2e_zmq],
   override_options: ['c_std=gnu11', 'werror=false'])
 
+# Bound-guard generator: conforming RDP frames interleaved with oversized (>2054B)
+# frames that must trip the proxy's recv->memcpy guard instead of overflowing it.
+ci_oversize = executable('ci_oversize', 'ci_oversize.c',
+  dependencies: [e2e_zmq, e2e_csp],
+  override_options: ['c_std=gnu11', 'werror=false'])
+
 # Proves the reproducibility gate: same seed + same stream -> identical drop vector.
 # zmqproxy_lossy is the proxy target from proxy/meson.build (same meson scope).
 test('proxy determinism (same seed -> identical drop vector)',
@@ -25,6 +31,14 @@ test('xsub/xpub forwarding regression',
   find_program('forwarding.sh'),
   args: [zmqproxy_lossy, ci_gen, ci_sub],
   timeout: 60)
+
+# Frame-size bound guard (TODOS#4): oversized wire frames must be rejected at the
+# recv->memcpy, not overflow the reused packet buffer. Asserts the proxy survives,
+# counts them malformed, and keeps forwarding/logging only conforming frames.
+test('proxy frame-size bound guard (oversized frame must not overflow)',
+  find_program('bound_guard.sh'),
+  args: [zmqproxy_lossy, ci_oversize, ci_sub],
+  timeout: 90)
 
 # APM start/stop E2E: stands up a libcsp node and #includes the monitor APM so it
 # drives the real start/stop commands + drainer + drain helper headlessly (no csh).

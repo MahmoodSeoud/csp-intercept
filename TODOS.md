@@ -28,16 +28,17 @@
   signal for the RDP-vs-DTP analysis and the uploader comparison.
 - **Depends on:** v1 instrument working first.
 
-## 4. Proxy frame-size bound guard (accepted-risk trip-wire from eng review 2026-05-30)
-- **What:** Add an upper-bound check `datalen <= sizeof(packet->data)` at every
-  `recv -> memcpy(frame_begin, zmq_data, datalen)` site in the vendored proxy
-  (`task_capture`, the hdx block, and the new CSP-aware match block); on violation
-  drop the frame and increment a malformed-frame counter.
-- **Why:** v1 accepts the risk because a closed virtual testbed only carries
-  conforming zmqhub frames (bounded by `buffer_size`). It becomes a live heap-overflow
-  the moment an oversized/non-conforming frame appears.
-- **Trigger (do this BEFORE):** first real-pass replay, attaching an external publisher,
-  or pointing `tc netem` / any non-CSH producer at the proxy.
+## 4. Proxy frame-size bound guard - DONE (2026-05-30)
+- **Closed:** `proxy_frame_fits(datalen)` rejects any frame larger than
+  `sizeof(packet->data) + HEADER_SIZE` (the writable span from `frame_begin`, mirroring
+  the upstream zmqhub RX allocation) at ALL THREE `recv -> memcpy` sites: `task_capture`,
+  the hdx block, and the deterministic match block. Malformed frames are dropped (never
+  forwarded or logged) and counted in `g_malformed_frames`, surfaced in the SIGINT
+  summary. Guarded by `tests/e2e/bound_guard.sh` (oversized frames must not overflow);
+  verified the unguarded path segfaults on the oversized memcpy.
+- **Was:** an unguarded `memcpy` of a wire-controlled `datalen` into a single reused
+  `csp_packet_t` - a live heap overflow the moment a non-conforming frame appeared. The
+  original trip-wire comment was only on one of the three sites, understating exposure.
 
 ## 5. DTP-completion measurement confound (contributions 2/3, eng review 2026-05-30)
 - **What:** Document (or fix upstream) that lossy DTP transfers never cleanly complete:
