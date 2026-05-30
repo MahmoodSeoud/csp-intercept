@@ -60,6 +60,8 @@ static void mon_write_header(void) {
         "# per-packet: t_ms,src,dst,dport,csp_flags,is_rdp,rdp_flags,rdp_seq,rdp_ack,dtp_offset,dtp_frag,rtt_paired,rtt_ms\n");
     fprintf(mon_csv,
         "# window: #WINDOW,t_ms,conn_ovf_delta,buffer_out_delta,buffer_remaining,inferred_loss,dups,reorders,suspect,suspect_flags\n");
+    fprintf(mon_csv,
+        "#   note: *_delta are per-window; inferred_loss/dups/reorders are cumulative run totals\n");
 }
 
 static void *mon_drainer(void *arg) {
@@ -86,7 +88,12 @@ static void *mon_drainer(void *arg) {
                     int paired = 0;
                     if (ok) {
                         ci_seq_tracker_feed(&mon_seq, h.seq);
-                        ci_rtt_on_data(&mon_rtt, h.seq, t);
+                        /* Only frames that carry payload (length beyond the 5-byte
+                         * trailer) are RTT "data"; recording a pure ACK/EAK/RST seq
+                         * would pollute the ring and cause false pairings. */
+                        if (pk->length > CI_RDP_HEADER_SIZE) {
+                            ci_rtt_on_data(&mon_rtt, h.seq, t);
+                        }
                         paired = ci_rtt_on_ack(&mon_rtt, h.ack, t, &rtt);
                     }
                     fprintf(mon_csv, "%u,%u,%u,%u,0x%02X,1,0x%02X,%u,%u,,,%d,%u\n",
@@ -206,10 +213,16 @@ static int csp_monitor_stop_cmd(struct slash *slash) {
     }
     mon_running = 0;                 /* drainer exits within ~100 ms (read timeout) */
     pthread_join(mon_thread, NULL);  /* race-free: no writes to mon_csv after this  */
-    /* Stop libcsp cloning router packets into the promisc queue now that nobody is
-     * draining it -- otherwise it keeps consuming the host's shared CSP buffer pool
-     * and the next start would read a queue full of stale packets. */
+    /* Stop libcsp cloning into the promisc queue, then DRAIN + free whatever is
+     * still queued. csp_promisc_disable() only flips the enable flag -- it does NOT
+     * empty the queue, so without this drain those clones (taken from the shared CSP
+     * buffer pool) leak on every stop, and the next start would ingest stale packets
+     * that poison the loss/dup/reorder math. (review: completes the ISSUE-001 fix.) */
     csp_promisc_disable();
+    csp_packet_t * stale;
+    while ((stale = csp_promisc_read(0)) != NULL) {
+        csp_buffer_free(stale);
+    }
     if (mon_csv != NULL) {
         fflush(mon_csv);
         fclose(mon_csv);

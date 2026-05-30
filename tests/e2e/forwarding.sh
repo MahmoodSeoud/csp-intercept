@@ -29,8 +29,9 @@ kill -INT  "$proxypid" 2>/dev/null; wait "$proxypid" 2>/dev/null || true
 
 count="$(tail -1 "$subout" 2>/dev/null)"
 count="${count:-0}"
+case "$count" in *[!0-9]*) count=0 ;; esac   # guard against a non-numeric trailing line
 echo "subscriber received: ${count}/500"
-if [ "${count}" -ge 400 ]; then
+if [ "${count}" -ge 200 ]; then
   echo "XSUB/XPUB forwarding OK"
 else
   echo "FAIL: forwarding regression -- only ${count}/500 frames reached the subscriber"

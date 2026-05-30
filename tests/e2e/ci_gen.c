@@ -34,8 +34,10 @@ int main(int argc, char ** argv) {
     if (zmq_connect(pub, addr) != 0) {
         return 1;
     }
-    /* Allow the PUB->XSUB connection + subscription propagation (slow joiner). */
-    usleep(400000);
+    /* Allow the PUB->XSUB connection + subscription propagation (ZMQ slow joiner).
+     * Generous so a loaded CI runner still has the subscription established before
+     * the first send -- otherwise early frames are silently dropped by the PUB. */
+    usleep(800000);
 
     csp_packet_t * p = malloc(sizeof(*p));
     if (p == NULL) {

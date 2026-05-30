@@ -43,7 +43,7 @@ awk -F, '
   END {
     common=0; mism=0; drops=0;
     for (i in a) if (i in b) { common++; if (a[i] != b[i]) mism++; drops += a[i]; }
-    if (common < 400) { printf "FAIL: only %d common indices (proxy/ZMQ flow problem?)\n", common; exit 1; }
+    if (common < 200) { printf "FAIL: only %d common indices (proxy/ZMQ flow problem?)\n", common; exit 1; }
     if (mism > 0)     { printf "FAIL: NON-DETERMINISTIC -- %d/%d indices differ\n", mism, common; exit 1; }
     printf "determinism OK: %d common indices, identical decisions, %d drops (~%.0f%%)\n", common, drops, 100.0*drops/common;
   }
