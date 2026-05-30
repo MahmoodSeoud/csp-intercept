@@ -82,3 +82,18 @@ test('two-oracle agreement (proxy drop-log vs live APM observed)',
   find_program('two_oracle.sh'),
   args: [zmqproxy_lossy, ci_gen, ci_monitor_host],
   timeout: 120)
+
+# DTP counterpart: same two-oracle loop on the port-8 bulk data path. ci_gen_dtp
+# publishes DTP data frames (LE uint32 byte-offset header, no RDP trailer); the proxy
+# matches dport 8 and keys its drop on the fragment index offset/(mtu-4); the monitor
+# runs the real APM in DTP mode (-d 8). Proves the DTP loss measurement end-to-end,
+# closing the gap that the port-8 path was parsed + unit-tested but never run live.
+# ci_dep gives ci_gen_dtp the ci_dtp.h header (CI_DTP_DATA_PORT).
+ci_gen_dtp = executable('ci_gen_dtp', 'ci_gen_dtp.c',
+  dependencies: [e2e_zmq, e2e_csp, ci_dep],
+  override_options: ['c_std=gnu11', 'werror=false'])
+
+test('two-oracle agreement DTP (proxy drop-log vs live APM observed, port 8)',
+  find_program('two_oracle_dtp.sh'),
+  args: [zmqproxy_lossy, ci_gen_dtp, ci_monitor_host],
+  timeout: 120)

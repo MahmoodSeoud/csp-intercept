@@ -14,13 +14,14 @@ Test plan: `~/.gstack/projects/csp-intercept/mahmood-unknown-eng-review-test-pla
 | `lib/` shared parse + rule + measurement | **done, 85 checks passing** |
 | `apm/` promisc monitor (CSH APM) | **done** (headless start/stop E2E) |
 | `proxy/` lossy zmqproxy (vendored + extended) | **done** (determinism + forwarding + bound-guard E2E) |
-| two-oracle agreement (proxy drop-log vs live APM) | **done** (native E2E, RDP) |
+| two-oracle agreement (proxy drop-log vs live APM) | **done** (native E2E, RDP + DTP) |
 | CI | **done, green** (ubuntu: `lib` + `frontends` jobs) |
 
-The full E2E suite is **7/7 green**. The two-oracle loop -- the core claim that the
+The full E2E suite is **8/8 green**. The two-oracle loop -- the core claim that the
 proxy's injected drops and the APM's observed loss agree exactly -- is proven on a
-synthetic RDP stream. What's left is integration and field work, not core logic: a real
-DTP-on-port-8 transfer and an on-target run against real DISCO2 traffic. See `TODOS.md`.
+synthetic stream for both protocol paths: RDP (port 13) and the DTP bulk data path
+(port 8). What's left is field work, not core logic: an on-target run against a real
+uploader/DISCO2 traffic. See `TODOS.md`.
 
 ## What's here
 
