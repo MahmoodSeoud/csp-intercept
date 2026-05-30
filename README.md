@@ -14,9 +14,13 @@ Test plan: `~/.gstack/projects/csp-intercept/mahmood-unknown-eng-review-test-pla
 | `lib/` shared parse + rule + measurement | **done, 85 checks passing** |
 | `apm/` promisc monitor (CSH APM) | **done** (headless start/stop E2E) |
 | `proxy/` lossy zmqproxy (vendored + extended) | **done** (determinism + forwarding + bound-guard E2E) |
+| two-oracle agreement (proxy drop-log vs live APM) | **done** (native E2E, RDP) |
 | CI | **done, green** (ubuntu: `lib` + `frontends` jobs) |
 
-What's left is integration and field work, not core logic: see `TODOS.md`.
+The full E2E suite is **7/7 green**. The two-oracle loop -- the core claim that the
+proxy's injected drops and the APM's observed loss agree exactly -- is proven on a
+synthetic RDP stream. What's left is integration and field work, not core logic: a real
+DTP-on-port-8 transfer and an on-target run against real DISCO2 traffic. See `TODOS.md`.
 
 ## What's here
 
@@ -57,16 +61,42 @@ cc -std=c11 -Wall -Wextra -Werror -I lib lib/ci_rdp.c lib/ci_dtp.c lib/ci_rule.c
 ```
 
 The front-ends (proxy + APM + their E2E tests) are **Linux-only** -- libcsp/CSH do
-not build on a macOS host. Build and test them in a container, which also mirrors CI:
+not build on a macOS host. On a Linux host they build **natively** (no Docker needed);
+this is the fastest local loop and runs the full E2E suite:
+
+```sh
+git submodule update --init --recursive     # vendored CSH deps (csp/slash/param/apm_csh)
+meson setup build -Dfrontends=true
+meson compile -C build
+meson test -C build --print-errorlogs       # 7/7: lib + proxy + APM + two-oracle
+```
+
+Native deps: `libzmq3-dev`, `libsocketcan-dev` (`libbsd-dev` on CI), `pkg-config`,
+`python3`, meson, ninja, a C toolchain.
+
+On a macOS host (or to mirror CI exactly) build in a container instead:
 
 ```sh
 scripts/lbuild          # docker: compile + run the front-end test suite
 scripts/lbuild clean    # drop the incremental build volume first
 ```
 
+The two-oracle agreement test (`tests/e2e/two_oracle.sh` driving `ci_monitor_host`, a
+real libcsp node that joins the lossy proxy and runs the actual `csp_monitor` APM) runs
+as part of `meson test` -- it needs no csh and no external `upload_gs-server`. The full
+DTP-on-port-8 loop with a real uploader (`scripts/two-oracle-loop`) does need Docker plus
+the external CSH/uploader trees.
+
 ## Next
 
-The instrument core is done; the remaining work is integration and the field result.
-Prioritised next step: stand up a localhost two-oracle loop (real `upload_gs-server` ->
-`zmqproxy-lossy` -> `dtp_client` with the monitor APM draining), then join the proxy
-drop-vector against the APM CSV by flow identity. See `TODOS.md`.
+The instrument core is done and the two-oracle loop is proven natively on a synthetic
+RDP stream. The remaining work is integration and the field result:
+
+1. A DTP-on-port-8 two-oracle variant (the bulk path is parsed + unit-tested but not yet
+   exercised end-to-end in the green suite).
+2. An on-target run: a real `upload_gs-server` -> `zmqproxy-lossy` -> `dtp_client`
+   transfer with the monitor APM draining, then join the proxy drop-vector against the
+   APM CSV by flow identity (`scripts/two-oracle-loop`, needs Docker + the external trees).
+3. A two-ended timestamped PCAP capture of a real DISCO2 pass.
+
+See `TODOS.md`.
