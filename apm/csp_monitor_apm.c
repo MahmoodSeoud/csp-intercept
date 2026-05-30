@@ -184,6 +184,7 @@ static int csp_monitor_start_cmd(struct slash *slash) {
     mon_running = 1;
     if (pthread_create(&mon_thread, NULL, mon_drainer, NULL) != 0) {
         mon_running = 0;
+        csp_promisc_disable();
         fclose(mon_csv);
         mon_csv = NULL;
         printf("csp_monitor: failed to start drainer thread\n");
@@ -205,6 +206,10 @@ static int csp_monitor_stop_cmd(struct slash *slash) {
     }
     mon_running = 0;                 /* drainer exits within ~100 ms (read timeout) */
     pthread_join(mon_thread, NULL);  /* race-free: no writes to mon_csv after this  */
+    /* Stop libcsp cloning router packets into the promisc queue now that nobody is
+     * draining it -- otherwise it keeps consuming the host's shared CSP buffer pool
+     * and the next start would read a queue full of stale packets. */
+    csp_promisc_disable();
     if (mon_csv != NULL) {
         fflush(mon_csv);
         fclose(mon_csv);
