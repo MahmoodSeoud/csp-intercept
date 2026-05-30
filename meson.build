@@ -7,7 +7,7 @@ project('csp-intercept', 'c',
 # the parse layer, so it is trivially unit-testable.
 ci_inc = include_directories('lib')
 ci_lib = static_library('ci',
-  ['lib/ci_rdp.c', 'lib/ci_dtp.c', 'lib/ci_rule.c'],
+  ['lib/ci_rdp.c', 'lib/ci_dtp.c', 'lib/ci_rule.c', 'lib/ci_meas.c'],
   include_directories: ci_inc,
   install: false)
 

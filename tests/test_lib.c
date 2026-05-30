@@ -16,6 +16,7 @@
 #include "ci_rdp.h"
 #include "ci_dtp.h"
 #include "ci_rule.h"
+#include "ci_meas.h"
 
 static int g_fail = 0;
 static int g_pass = 0;
@@ -155,12 +156,180 @@ static void test_rule_decide(void) {
     CHECK(ci_rule_decide(&rr, 99) == 0, "replay out-of-range keeps");
 }
 
+/* ---- flow-id / wrap key (Tension 1: per-flow identity, NOT wire order) ---- */
+
+static void test_flow_index(void) {
+    CHECK(ci_flow_index_rdp(0, 42) == 42, "flow index epoch0 = seq");
+    CHECK(ci_flow_index_rdp(1, 0) == 0x10000, "flow index epoch1 lifts by 2^16");
+    CHECK(ci_flow_index_rdp(3, 7) == (((uint64_t)3 << 16) | 7), "flow index = epoch|seq");
+
+    /* forward progress across the 0xFFFF->0x0000 boundary trips the wrap epoch */
+    CHECK(ci_rdp_seq_is_wrap(0xFFFE, 0x0001) == 1, "wrap: 0xFFFE -> 0x0001 (gapped forward)");
+    CHECK(ci_rdp_seq_is_wrap(0xFFFF, 0x0000) == 1, "wrap: 0xFFFF -> 0x0000");
+    CHECK(ci_rdp_seq_is_wrap(100, 101) == 0, "no wrap: normal forward step");
+    CHECK(ci_rdp_seq_is_wrap(100, 99) == 0, "no wrap: small backward reorder");
+    CHECK(ci_rdp_seq_is_wrap(5, 5) == 0, "no wrap: same seq");
+}
+
+/* ---- ci_frame_from_fields (the shared wire->frame mapping, DRY) ---- */
+
+static void test_frame_from_fields(void) {
+    ci_frame_t f;
+
+    /* non-RDP DTP data on port 8: is_rdp 0, no trailer parsed */
+    uint8_t dtp[8] = {0x40,0,0,0, 1,2,3,4};
+    CHECK(ci_frame_from_fields(8, 0x00, dtp, sizeof dtp, &f) == 0, "frame: dtp ok");
+    CHECK(f.dport == 8 && f.is_rdp == 0 && f.rdp_flags == 0, "frame: port-8 non-RDP");
+
+    /* RDP SYN on port 13: trailer parsed, high-nibble counter masked off -> SYN */
+    uint8_t rdp[10] = {0xAA,0xBB,0xCC,0xDD,0xEE, 0x18, 0,0x2A, 0x01,0x05};
+    CHECK(ci_frame_from_fields(13, CI_CSP_FRDP, rdp, sizeof rdp, &f) == 0, "frame: rdp ok");
+    CHECK(f.is_rdp == 1 && f.rdp_flags == CI_RDP_SYN, "frame: RDP SYN on 13, nibble masked");
+
+    /* RDP flagged but payload too short for a trailer: is_rdp 1, flags 0, no OOB read */
+    uint8_t tiny[3] = {1,2,3};
+    CHECK(ci_frame_from_fields(13, CI_CSP_FRDP, tiny, sizeof tiny, &f) == 0, "frame: short rdp ok");
+    CHECK(f.is_rdp == 1 && f.rdp_flags == 0, "frame: RDP flagged but len<5 -> flags 0");
+
+    /* len 0 must not deref data */
+    CHECK(ci_frame_from_fields(13, CI_CSP_FRDP, NULL, 0, &f) == 0, "frame: len 0 no deref");
+    CHECK(f.is_rdp == 1 && f.rdp_flags == 0, "frame: len 0 -> flags 0");
+
+    /* NULL out -> -1 */
+    CHECK(ci_frame_from_fields(8, 0, dtp, sizeof dtp, NULL) == -1, "frame: NULL out -> -1");
+
+    /* the built frame round-trips through ci_rule_match */
+    ci_drop_rule_t r = {0}; r.match_dport = 13; r.match_rdp_syn = 1;
+    ci_frame_from_fields(13, CI_CSP_FRDP, rdp, sizeof rdp, &f);
+    CHECK(ci_rule_match(&r, &f) == 1, "frame: built frame matches rdp-syn-13 rule");
+}
+
+/* ---- threshold path: p just below 1.0 drops every index; boundaries hold ---- */
+
+static void test_rule_high_prob(void) {
+    ci_drop_rule_t r = {0};
+    r.seed = 0xABCDEF;
+    /* 1 - 2^-53; threshold = 2^64 - 2048, so P(keep) ~ 1e-16 per index. With a
+     * fixed seed this deterministically drops all 64 -- guards the threshold math
+     * (and confirms the cast is in range; UBSan build proves no overflow). */
+    r.drop_probability = 0.9999999999999999;
+    int all_drop = 1;
+    for (uint64_t i = 0; i < 64; i++) {
+        if (ci_rule_decide(&r, i) != 1) { all_drop = 0; }
+    }
+    CHECK(all_drop == 1, "high p: p just below 1.0 drops every index");
+
+    ci_drop_rule_t r0 = {0}; r0.drop_probability = 0.0;
+    ci_drop_rule_t r1 = {0}; r1.drop_probability = 1.0;
+    CHECK(ci_rule_decide(&r0, 7) == 0, "p=0 keeps");
+    CHECK(ci_rule_decide(&r1, 7) == 1, "p=1 drops");
+}
+
+/* ---- measurement math: seq tracker (loss / dup / reorder, wrap-aware) ---- */
+
+static void test_seq_tracker(void) {
+    ci_seq_tracker_t t;
+
+    /* in-order, no loss */
+    ci_seq_tracker_init(&t);
+    CHECK(ci_seq_tracker_feed(&t, 0) == 0, "seq: first in-order");
+    CHECK(ci_seq_tracker_feed(&t, 1) == 0, "seq: 1 in-order");
+    CHECK(ci_seq_tracker_feed(&t, 2) == 0, "seq: 2 in-order");
+    CHECK(ci_seq_tracker_feed(&t, 3) == 0, "seq: 3 in-order");
+    CHECK(ci_seq_tracker_loss(&t) == 0, "seq: 0,1,2,3 -> loss 0");
+
+    /* forward gap: seq 2 missing */
+    ci_seq_tracker_init(&t);
+    ci_seq_tracker_feed(&t, 0);
+    ci_seq_tracker_feed(&t, 1);
+    CHECK(ci_seq_tracker_feed(&t, 3) == 1, "seq: 0,1,3 -> 3 classed as gap");
+    CHECK(ci_seq_tracker_loss(&t) == 1, "seq: 0,1,3 -> loss 1");
+
+    /* duplicate */
+    ci_seq_tracker_init(&t);
+    ci_seq_tracker_feed(&t, 0);
+    ci_seq_tracker_feed(&t, 1);
+    CHECK(ci_seq_tracker_feed(&t, 1) == 2, "seq: repeat 1 classed as dup");
+    CHECK(ci_seq_tracker_loss(&t) == 0, "seq: 0,1,1 -> loss 0");
+
+    /* reorder backfills the hole -> loss returns to 0 */
+    ci_seq_tracker_init(&t);
+    ci_seq_tracker_feed(&t, 0);
+    CHECK(ci_seq_tracker_feed(&t, 2) == 1, "seq: 0,2 -> 2 is a gap");
+    CHECK(ci_seq_tracker_loss(&t) == 1, "seq: gap before backfill -> loss 1");
+    CHECK(ci_seq_tracker_feed(&t, 1) == 3, "seq: 1 after 2 classed as reorder");
+    CHECK(ci_seq_tracker_loss(&t) == 0, "seq: 0,2,1 -> reorder backfilled -> loss 0");
+
+    /* 16-bit wrap: epoch increments, no spurious loss */
+    ci_seq_tracker_init(&t);
+    ci_seq_tracker_feed(&t, 0xFFFE);
+    CHECK(t.epoch == 0, "seq: epoch 0 before wrap");
+    ci_seq_tracker_feed(&t, 0xFFFF);
+    ci_seq_tracker_feed(&t, 0x0000);
+    ci_seq_tracker_feed(&t, 0x0001);
+    CHECK(ci_seq_tracker_loss(&t) == 0, "seq: wrap 0xFFFE..0x0001 -> loss 0");
+    CHECK(t.epoch == 1, "seq: epoch incremented across wrap");
+}
+
+/* ---- measurement math: observed-at-tap RTT pairing ---- */
+
+static void test_rtt_pairing(void) {
+    ci_rtt_pairing_t p;
+    ci_rtt_init(&p);
+
+    uint32_t rtt = 0;
+    ci_rtt_on_data(&p, 5, 100);
+    CHECK(ci_rtt_on_ack(&p, 5, 140, &rtt) == 1 && rtt == 40, "rtt: data@100 ack@140 -> 40");
+    CHECK(ci_rtt_on_ack(&p, 7, 200, &rtt) == 0, "rtt: unmatched ack -> 0");
+    CHECK(ci_rtt_on_ack(&p, 5, 160, &rtt) == 0, "rtt: paired entry consumed");
+
+    /* ring overflow: the oldest entry is dropped */
+    ci_rtt_init(&p);
+    ci_rtt_on_data(&p, 1000, 1); /* oldest */
+    for (uint32_t i = 0; i < CI_RTT_RING; i++) {
+        ci_rtt_on_data(&p, (uint16_t)(2000 + i), 10 + i);
+    }
+    CHECK(ci_rtt_on_ack(&p, 1000, 999, &rtt) == 0, "rtt: ring overflow drops oldest");
+}
+
+/* ---- measurement-suspect window flag + uint8 counter delta ---- */
+
+static void test_measurement_suspect(void) {
+    uint32_t flags = 0xFFFF;
+    ci_window_health_t ok = { .conn_ovf_delta = 0, .buffer_out_delta = 0,
+                              .buffer_remaining = 900, .buffer_low_water = 100 };
+    CHECK(ci_measurement_suspect(&ok, &flags) == 0 && flags == 0, "suspect: clean window ok");
+
+    ci_window_health_t ovf = ok; ovf.conn_ovf_delta = 3;
+    CHECK(ci_measurement_suspect(&ovf, &flags) == 1 && (flags & CI_SUSPECT_CONN_OVF),
+          "suspect: conn_ovf delta flags window");
+
+    ci_window_health_t bout = ok; bout.buffer_out_delta = 1;
+    CHECK(ci_measurement_suspect(&bout, &flags) == 1 && (flags & CI_SUSPECT_BUFFER_OUT),
+          "suspect: buffer_out delta flags window");
+
+    ci_window_health_t low = ok; low.buffer_remaining = 50;
+    CHECK(ci_measurement_suspect(&low, &flags) == 1 && (flags & CI_SUSPECT_BUFFER_LOW),
+          "suspect: low buffer flags window");
+
+    /* uint8 counters wrap at 256: delta is mod 256 */
+    CHECK(ci_u8_delta(250, 4) == 10, "u8 delta: 250->4 wraps to 10");
+    CHECK(ci_u8_delta(5, 5) == 0, "u8 delta: no change -> 0");
+    CHECK(ci_u8_delta(0, 255) == 255, "u8 delta: 0->255 = 255");
+}
+
 int main(void) {
     test_rdp_parse();
     test_dtp_parse();
     test_prng();
     test_rule_match();
     test_rule_decide();
+    test_flow_index();
+    test_frame_from_fields();
+    test_rule_high_prob();
+    test_seq_tracker();
+    test_rtt_pairing();
+    test_measurement_suspect();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
