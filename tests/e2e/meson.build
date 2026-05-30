@@ -40,6 +40,13 @@ test('proxy frame-size bound guard (oversized frame must not overflow)',
   args: [zmqproxy_lossy, ci_oversize, ci_sub],
   timeout: 90)
 
+# CLI boundary validation: an out-of-range -M (CSP dport 0-63) must be rejected, not
+# silently match nothing and produce a falsely-lossless run.
+test('proxy -M dport boundary validation',
+  find_program('cli_guard.sh'),
+  args: [zmqproxy_lossy],
+  timeout: 60)
+
 # APM start/stop E2E: stands up a libcsp node and #includes the monitor APM so it
 # drives the real start/stop commands + drainer + drain helper headlessly (no csh).
 # Guards ISSUE-001 (promisc clones must be drained on stop -> no buffer-pool leak)

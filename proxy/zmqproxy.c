@@ -23,6 +23,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 #include <stdio.h>
 #include <string.h>
 #include <signal.h>
+#include <errno.h>
 #include <zmq.h>
 #include <assert.h>
 #include <pthread.h>
@@ -321,7 +322,7 @@ static void * task_capture(void *arg) {
 
         if (logfile) {
         	const char * delimiter = "--------\n";
-        	fwrite(delimiter, sizeof(delimiter), 1, logfile);
+        	fputs(delimiter, logfile);   /* sizeof(delimiter) was the pointer size, not the string */
         	fwrite(packet->frame_begin, packet->frame_length, 1, logfile);
         	fflush(logfile);
         }
@@ -437,6 +438,19 @@ int main(int argc, char ** argv) {
                 break;
         }
     }
+
+#ifdef ZMQ_PROXY_LOSSY
+    /* -M is a CSP dport (0-63 for v2; -1 = match any). A value outside that range
+     * silently matches nothing, leaving the drop-log empty so a misconfigured run
+     * looks lossless -- the worst failure class for a measurement instrument. Fail
+     * fast at the boundary instead. */
+    if (match_dport < -1 || match_dport > 63) {
+        printf("zmqproxy-lossy: -M %d invalid: CSP dport is 0-63 (-1 = any). "
+               "A value outside this range matches nothing and the run would silently "
+               "look lossless.\n", match_dport);
+        exit(1);
+    }
+#endif
 
     ctx = zmq_ctx_new();
     assert(ctx);
@@ -559,18 +573,28 @@ front:
  * DTP fragment index for the port-8 bulk stream. `packet` is already csp_id_stripped
  * so packet->data/length is the CSP payload (RDP trailer at data[length-5]).
  */
-/* Clean shutdown: flush+close the drop-log (the run's ground-truth oracle) and
- * print the kept/dropped summary. The proxy loops forever, so SIGINT (Ctrl-C) is
- * the normal end of a measurement run. */
+/* SIGINT (Ctrl-C) is the normal end of a measurement run. The handler is kept
+ * async-signal-safe: it ONLY sets a flag. The main loop notices it on the next
+ * iteration (zmq_poll returns EINTR), breaks, and does the unsafe work -- flushing +
+ * closing the drop-log oracle and printing the summary -- in normal context. The old
+ * handler called fclose/printf/exit from signal context, racing the loop's own
+ * fprintf/fflush to g_drop_log and risking a truncated oracle at end-of-run. */
+static volatile sig_atomic_t g_stop = 0;
 static void proxy_on_sigint(int sig) {
     (void)sig;
+    g_stop = 1;
+}
+
+/* Flush + close the drop-log (the run's ground-truth oracle) and print the summary.
+ * Called from the main thread after the loop exits, never from signal context. */
+static void proxy_shutdown(void) {
     if (g_drop_log) {
+        fflush(g_drop_log);
         fclose(g_drop_log);
         g_drop_log = NULL;
     }
     printf("\n[zmqproxy-lossy] kept=%llu dropped=%llu delay-drops=%llu malformed=%llu\n",
            g_kept, g_drops, g_delay_drops, g_malformed_frames);
-    exit(0);
 }
 
 static uint64_t proxy_flow_index(const csp_packet_t * packet, const ci_frame_t * f) {
@@ -608,7 +632,16 @@ void zmq_proxy_lossy() {
     g_rule.replay_len       = 0;
     g_dtp_mtu               = (uint16_t)mtu_arg;
 
-    signal(SIGINT, proxy_on_sigint);
+    /* sigaction without SA_RESTART (NOT signal(), which sets SA_RESTART on glibc):
+     * the handler only sets g_stop, so zmq_poll MUST be allowed to return EINTR for
+     * the loop to notice it. With SA_RESTART the kernel would auto-restart the poll
+     * and the proxy would never shut down on SIGINT. */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = proxy_on_sigint;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
 
     if (drop_log_name) {
         g_drop_log = fopen(drop_log_name, "w");
@@ -647,8 +680,14 @@ void zmq_proxy_lossy() {
     csp_packet_t * packet = malloc(sizeof(*packet));
     assert(packet != NULL);
 
-    while (1) {
-        zmq_poll(items, 2, -1);
+    while (!g_stop) {
+        int prc = zmq_poll(items, 2, -1);
+        if (prc < 0) {
+            if (zmq_errno() == EINTR) {
+                continue;   /* SIGINT interrupted the poll -> re-check g_stop */
+            }
+            break;          /* unexpected poll error -> fall through to shutdown */
+        }
         if (items[0].revents & ZMQ_POLLIN) {
             zmq_msg_t msg;
             zmq_msg_init(&msg);
@@ -779,5 +818,8 @@ void zmq_proxy_lossy() {
             zmq_msg_close(&msg);
         }
     }
+
+    proxy_shutdown();
+    exit(0);
 }
 #endif
