@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+#
+# two-oracle-loop - the MVP harness. Builds the loop image and runs the full localhost
+# two-oracle loop in one arm64 container: a real DTP transfer (upload_gs-server ->
+# zmqproxy-lossy -> dtp_client) with the csp_monitor APM observing, then asserts the
+# proxy drop-log and the APM CSV agree on exactly which fragments were lost.
+#
+# Needs the three external source trees (override via env if they live elsewhere):
+#   CSH_DIR   (default ~/projects/csh)
+#   GS_DIR    (default ~/DISCOSAT/upload_gs-server)
+#   DIPP_DIR  (default ~/DISCOSAT/dipp-apm)
+# Run knobs: LOSS (0.1) SEED (1) MTU (200) PAYLOAD (0) SKIP_BUILD (0)
+#
+# Usage:
+#   scripts/two-oracle-loop                 # build everything + run + assert agreement
+#   LOSS=0.25 SEED=7 scripts/two-oracle-loop
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+CSH_DIR="${CSH_DIR:-$HOME/projects/csh}"
+GS_DIR="${GS_DIR:-$HOME/DISCOSAT/upload_gs-server}"
+DIPP_DIR="${DIPP_DIR:-$HOME/DISCOSAT/dipp-apm}"
+IMG=csp-loop-dev
+
+for d in "$CSH_DIR" "$GS_DIR" "$DIPP_DIR"; do
+  if [ ! -d "$d" ]; then
+    echo "two-oracle-loop: missing source dir: $d" >&2
+    echo "  set CSH_DIR / GS_DIR / DIPP_DIR to point at the csh, upload_gs-server, dipp-apm trees." >&2
+    exit 1
+  fi
+done
+
+echo "two-oracle-loop: building image $IMG (cached after first run)..."
+docker build -q -t "$IMG" -f "$REPO/docker/Dockerfile.loop" "$REPO" >/dev/null
+
+echo "two-oracle-loop: running the loop (build + p=0 + p=${LOSS:-0.1} + agreement)..."
+exec docker run --rm \
+  -v "$REPO":/src/csp-intercept:ro \
+  -v "$CSH_DIR":/src/csh:ro \
+  -v "$GS_DIR":/src/upload_gs-server:ro \
+  -v "$DIPP_DIR":/src/dipp-apm:ro \
+  -e LOSS -e SEED -e MTU -e PAYLOAD -e GS_ADDR -e CSH_ADDR -e TIMEOUT -e SKIP_BUILD \
+  "$IMG" bash /src/csp-intercept/scripts/loop-in-container.sh
