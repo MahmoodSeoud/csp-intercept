@@ -66,3 +66,19 @@ apm_host = executable('apm_host', 'apm_host.c',
   override_options: ['c_std=gnu11', 'werror=false'])
 
 test('apm start/stop drain (no buffer-pool leak across cycles)', apm_host, timeout: 90)
+
+# Two-oracle loop: a REAL libcsp node that joins the lossy proxy over zmqhub and runs
+# the actual csp_monitor APM, vs the proxy's own drop-log. ci_gen publishes a
+# deterministic RDP stream through the proxy; the proxy drops a reproducible subset by
+# per-flow identity and logs it (oracle 1); the monitor observes the rest (oracle 2).
+# two_oracle.sh asserts the two sets partition the sent seqs exactly (the MVP "whoa").
+# Links zmq (zmqhub interface) on top of the same deps as apm_host.
+ci_monitor_host = executable('ci_monitor_host', 'ci_monitor_host.c',
+  include_directories: include_directories('../../apm'),
+  dependencies: [e2e_csp, e2e_zmq, e2e_slash, e2e_apm, e2e_param, ci_dep, e2e_threads],
+  override_options: ['c_std=gnu11', 'werror=false'])
+
+test('two-oracle agreement (proxy drop-log vs live APM observed)',
+  find_program('two_oracle.sh'),
+  args: [zmqproxy_lossy, ci_gen, ci_monitor_host],
+  timeout: 120)
