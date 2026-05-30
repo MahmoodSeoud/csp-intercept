@@ -205,6 +205,23 @@ slash_command_sub(csp_monitor, start, csp_monitor_start_cmd,
                   "[-o FILE] [-d DPORT] [-w MS] [-m MTU]",
                   "Start the promiscuous CSP link monitor");
 
+/* Drain + free every clone still sitting in the promisc queue, returning the count
+ * freed. csp_promisc_disable() only flips the enable flag -- it does NOT empty the
+ * queue, so without this drain those clones (taken from the shared CSP buffer pool)
+ * leak on every stop, and the next start would ingest stale packets that poison the
+ * loss/dup/reorder math. (review: completes the ISSUE-001 fix.) Factored out so the
+ * leak-free contract is independently testable; the caller must have stopped any
+ * concurrent drainer first (no live reader on the queue). */
+static int mon_drain_residual(void) {
+    int freed = 0;
+    csp_packet_t * stale;
+    while ((stale = csp_promisc_read(0)) != NULL) {
+        csp_buffer_free(stale);
+        freed++;
+    }
+    return freed;
+}
+
 static int csp_monitor_stop_cmd(struct slash *slash) {
     (void)slash;
     if (!mon_running) {
@@ -213,16 +230,10 @@ static int csp_monitor_stop_cmd(struct slash *slash) {
     }
     mon_running = 0;                 /* drainer exits within ~100 ms (read timeout) */
     pthread_join(mon_thread, NULL);  /* race-free: no writes to mon_csv after this  */
-    /* Stop libcsp cloning into the promisc queue, then DRAIN + free whatever is
-     * still queued. csp_promisc_disable() only flips the enable flag -- it does NOT
-     * empty the queue, so without this drain those clones (taken from the shared CSP
-     * buffer pool) leak on every stop, and the next start would ingest stale packets
-     * that poison the loss/dup/reorder math. (review: completes the ISSUE-001 fix.) */
+    /* Stop libcsp cloning into the promisc queue, then drain whatever the drainer
+     * left queued at shutdown. */
     csp_promisc_disable();
-    csp_packet_t * stale;
-    while ((stale = csp_promisc_read(0)) != NULL) {
-        csp_buffer_free(stale);
-    }
+    mon_drain_residual();
     if (mon_csv != NULL) {
         fflush(mon_csv);
         fclose(mon_csv);

@@ -25,3 +25,23 @@ test('xsub/xpub forwarding regression',
   find_program('forwarding.sh'),
   args: [zmqproxy_lossy, ci_gen, ci_sub],
   timeout: 60)
+
+# APM start/stop E2E: stands up a libcsp node and #includes the monitor APM so it
+# drives the real start/stop commands + drainer + drain helper headlessly (no csh).
+# Guards ISSUE-001 (promisc clones must be drained on stop -> no buffer-pool leak)
+# and the per-packet/#WINDOW CSV contract. csp is linked for the node runtime; the
+# apm_csh/param includes are header-only (apm.h), so no unresolved dlopen symbols.
+# slash is LINKED in full: the APM's start command uses optparse_* (provided by
+# slash). The apm/ shared-object can take slash as header-only because the host csh
+# resolves optparse at dlopen, but a standalone test exe must link it.
+e2e_slash = dependency('slash',   fallback: ['slash', 'slash_dep'])
+e2e_apm   = dependency('apm_csh', fallback: ['apm_csh', 'apm_csh_dep']).partial_dependency(includes: true, links: false)
+e2e_param = dependency('param',   fallback: ['param', 'param_dep']).partial_dependency(includes: true, links: false)
+e2e_threads = dependency('threads')
+
+apm_host = executable('apm_host', 'apm_host.c',
+  include_directories: include_directories('../../apm'),
+  dependencies: [e2e_csp, e2e_slash, e2e_apm, e2e_param, ci_dep, e2e_threads],
+  override_options: ['c_std=gnu11', 'werror=false'])
+
+test('apm start/stop drain (no buffer-pool leak across cycles)', apm_host, timeout: 90)
