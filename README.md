@@ -11,10 +11,12 @@ Test plan: `~/.gstack/projects/csp-intercept/mahmood-unknown-eng-review-test-pla
 
 | Component | State |
 |-----------|-------|
-| `lib/` shared parse + rule + PRNG | **done, 37 tests passing** |
-| `apm/` promisc monitor (CSH APM) | not started (needs libcsp/CSH submodules) |
-| `proxy/` lossy zmqproxy (vendored + extended) | not started |
-| CI | not started |
+| `lib/` shared parse + rule + measurement | **done, 85 checks passing** |
+| `apm/` promisc monitor (CSH APM) | **done** (headless start/stop E2E) |
+| `proxy/` lossy zmqproxy (vendored + extended) | **done** (determinism + forwarding + bound-guard E2E) |
+| CI | **done, green** (ubuntu: `lib` + `frontends` jobs) |
+
+What's left is integration and field work, not core logic: see `TODOS.md`.
 
 ## What's here
 
@@ -29,7 +31,10 @@ header comments for file:line provenance).
 - `ci_dtp.{h,c}` - parse the DTP data packet (uint32 LE byte-offset header on
   port 8, connectionless/unreliable; fragment = offset/(mtu-4)).
 - `ci_rule.{h,c}` - the drop rule: match by port / RDP-SYN, decide drop/keep
-  deterministically per packet index (or from a recorded replay vector).
+  deterministically per packet index (or from a recorded replay vector); also the
+  per-flow reproducibility key (RDP seq + wrap epoch / DTP fragment index).
+- `ci_meas.{h,c}` - loss/dup/reorder sequence tracking, observed-at-tap RTT pairing,
+  and the `MEASUREMENT_SUSPECT` flag (so instrument loss is not mistaken for link loss).
 
 ## What this studies
 
@@ -41,16 +46,27 @@ in the (local) design doc, not here.
 
 ## Build & test
 
+The pure `lib/` builds and tests natively (no dependencies):
+
 ```sh
 meson setup build
 meson test -C build
-# or, dependency-free:
+# or, dependency-free (85 checks):
 cc -std=c11 -Wall -Wextra -Werror -I lib lib/ci_rdp.c lib/ci_dtp.c lib/ci_rule.c \
-   tests/test_lib.c -o /tmp/ci_test && /tmp/ci_test
+   lib/ci_meas.c tests/test_lib.c -o /tmp/ci_test && /tmp/ci_test
+```
+
+The front-ends (proxy + APM + their E2E tests) are **Linux-only** -- libcsp/CSH do
+not build on a macOS host. Build and test them in a container, which also mirrors CI:
+
+```sh
+scripts/lbuild          # docker: compile + run the front-end test suite
+scripts/lbuild clean    # drop the incremental build volume first
 ```
 
 ## Next
 
-Vendor `libcsp`/`slash`/`libapm_csh` + CSH's `src/zmqproxy.c` (`zmq_proxy_lossy`),
-then build the monitor APM and the lossy proxy against `lib/`. See `TODOS.md` and
-the design doc Next Steps.
+The instrument core is done; the remaining work is integration and the field result.
+Prioritised next step: stand up a localhost two-oracle loop (real `upload_gs-server` ->
+`zmqproxy-lossy` -> `dtp_client` with the monitor APM draining), then join the proxy
+drop-vector against the APM CSV by flow identity. See `TODOS.md`.
