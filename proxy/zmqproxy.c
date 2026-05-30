@@ -20,6 +20,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include <unistd.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <signal.h>
 #include <zmq.h>
 #include <assert.h>
 #include <pthread.h>
@@ -41,6 +44,13 @@ extern csp_conf_t csp_conf;
 #include <time.h>
 #include <csp/arch/csp_time.h>
 #include <csp/arch/csp_queue.h>
+
+/* csp-intercept shared lib: the CSP-aware drop rule + the per-flow reproducibility
+ * key. Pure C, no libcsp -- this is the one source of truth shared with the APM. */
+#include "ci_rule.h"
+#include "ci_rdp.h"
+#include "ci_dtp.h"
+
 void zmq_proxy_lossy();
 
 int hdx_powerup_start_ms = 0;
@@ -54,7 +64,23 @@ double delay_prob = 0.0;
 int enable_lossy = 0;
 int delay_ms = 0;
 int seed = 0;
-char * shortopts = "hakgv:d:s:p:f:L:C:D:T:S:N:U:O:";
+
+/* Deterministic CSP-aware drop (eng review: loss-only is the reproducible mode;
+ * -C/-D/-N stay on rand()). These are set from the CLI and assembled into g_rule. */
+int match_dport = -1;       /* -M: gate drops to this dport (required for repro) */
+int match_rdp_syn = 0;      /* -R: only RDP SYN packets                          */
+int mtu_arg = 200;          /* -m: DTP session MTU (must match the client)       */
+char * drop_log_name = NULL;/* -o: write the drop-decision vector here (oracle)  */
+
+static ci_drop_rule_t g_rule;
+static uint16_t g_last_seq = 0;     /* RDP 16-bit seq wrap-epoch tracking */
+static int      g_have_last_seq = 0;
+static uint32_t g_epoch = 0;
+static uint16_t g_dtp_mtu = 200;
+static FILE *   g_drop_log = NULL;
+static unsigned long long g_drops = 0, g_kept = 0, g_delay_drops = 0;
+
+char * shortopts = "hakgv:d:s:p:f:L:C:D:T:S:N:U:O:M:Rm:o:";
 #else
 char * shortopts = "hgv:a:k:d:s:p:f:";
 #endif
@@ -345,6 +371,19 @@ int main(int argc, char ** argv) {
             case 'O':
             	hdx_powerdown_delay = atoi(optarg);
                 break;
+            case 'M':
+            	match_dport = atoi(optarg);
+                enable_lossy = 1;
+                break;
+            case 'R':
+            	match_rdp_syn = 1;
+                break;
+            case 'm':
+            	mtu_arg = atoi(optarg);
+                break;
+            case 'o':
+            	drop_log_name = optarg;
+                break;
 #endif
             default:
                 printf("Usage:\n"
@@ -365,6 +404,10 @@ int main(int argc, char ** argv) {
                 	   " -N NODE \tSelect node as half duplex\n"
                 	   " -U PWRUP \tTX power up time ms\n"
                 	   " -O PWRDWN \tTX power down time ms\n"
+                	   " -M DPORT \tMatch dport for DETERMINISTIC loss (e.g. 13 RDP / 8 DTP)\n"
+                	   " -R \tMatch only RDP SYN packets (use with -M)\n"
+                	   " -m MTU \tDTP session MTU for fragment indexing (match the client; default 200)\n"
+                	   " -o FILE \tWrite the drop-decision vector (the reproducibility oracle) to FILE\n"
 #endif
                 		);
                 exit(1);
@@ -486,11 +529,82 @@ front:
     return NULL;
 }
 
+/*
+ * Per-flow PROTOCOL identity for the drop PRNG / replay key (eng review Tension 1):
+ * arrival order is nondeterministic across runs, so we key on a packet-intrinsic
+ * field -- the RDP seq (lifted past 16-bit wrap by an epoch) for RDP flows, or the
+ * DTP fragment index for the port-8 bulk stream. `packet` is already csp_id_stripped
+ * so packet->data/length is the CSP payload (RDP trailer at data[length-5]).
+ */
+/* Clean shutdown: flush+close the drop-log (the run's ground-truth oracle) and
+ * print the kept/dropped summary. The proxy loops forever, so SIGINT (Ctrl-C) is
+ * the normal end of a measurement run. */
+static void proxy_on_sigint(int sig) {
+    (void)sig;
+    if (g_drop_log) {
+        fclose(g_drop_log);
+        g_drop_log = NULL;
+    }
+    printf("\n[zmqproxy-lossy] kept=%llu dropped=%llu delay-drops=%llu\n",
+           g_kept, g_drops, g_delay_drops);
+    exit(0);
+}
+
+static uint64_t proxy_flow_index(const csp_packet_t * packet, const ci_frame_t * f) {
+    if (f->is_rdp) {
+        ci_rdp_header_t h;
+        if (ci_rdp_parse_trailer(packet->data, packet->length, &h) == 0) {
+            if (g_have_last_seq && ci_rdp_seq_is_wrap(g_last_seq, h.seq)) {
+                g_epoch++;
+            }
+            g_last_seq = h.seq;
+            g_have_last_seq = 1;
+            return ci_flow_index_rdp(g_epoch, h.seq);
+        }
+        return 0;
+    }
+    /* DTP bulk (port 8): leading uint32 LE byte-offset -> fragment index. */
+    uint32_t off, frag = 0;
+    if (ci_dtp_parse_offset(packet->data, packet->length, &off) == 0) {
+        ci_dtp_fragment_index(off, g_dtp_mtu, &frag);
+    }
+    return frag;
+}
+
 void zmq_proxy_lossy() {
 
     delay_handle = csp_queue_create_static(1024, sizeof(delayed_msg_t), NULL, NULL);
-    printf("WARNING PACKET LOSS/CORRUPTION ON \n%.2f%% LOSS \n%.2f%% CORRUPTION\n", loss_prob * 100, corr_prob * 100);
-    printf("%.2f%% DELAYED BY %dms\n", delay_prob * 100, delay_ms);
+
+    /* Assemble the deterministic drop rule from the CLI (loss-only reproducible
+     * mode). Corruption/delay/hdx stay on rand() and are NOT reproducible. */
+    g_rule.seed             = (uint64_t)seed;
+    g_rule.match_dport      = match_dport;
+    g_rule.match_rdp_syn    = match_rdp_syn;
+    g_rule.drop_probability = loss_prob;
+    g_rule.replay_vector    = NULL;
+    g_rule.replay_len       = 0;
+    g_dtp_mtu               = (uint16_t)mtu_arg;
+
+    signal(SIGINT, proxy_on_sigint);
+
+    if (drop_log_name) {
+        g_drop_log = fopen(drop_log_name, "w");
+        if (g_drop_log == NULL) {
+            printf("Unable to open drop-log %s\n", drop_log_name);
+            exit(-1);
+        }
+        fprintf(g_drop_log, "# t_ms,src,dport,csp_flags,is_rdp,index,epoch,dropped\n");
+    }
+
+    if (match_dport >= 0) {
+        printf("DETERMINISTIC loss: seed=%d dport=%d rdp_syn=%d p=%.4f mtu=%u%s\n",
+               seed, match_dport, match_rdp_syn, loss_prob, g_dtp_mtu,
+               g_drop_log ? " [drop-log on]" : "");
+    } else if (loss_prob > 0.0) {
+        printf("WARNING: legacy rand() loss is NOT reproducible. Pass -M <dport> for the deterministic mode.\n");
+    }
+    printf("corruption %.2f%%, delay %.2f%% by %dms\n", corr_prob * 100, delay_prob * 100, delay_ms);
+
     if (seed) {
         srand(seed);
     } else {
@@ -500,8 +614,12 @@ void zmq_proxy_lossy() {
         { frontend, 0, ZMQ_POLLIN, 0 },
         { backend, 0, ZMQ_POLLIN, 0 }
     };
+    /* Only spawn the delay worker when a delay/hdx mode is active (otherwise it
+     * busy-spins doing nothing -- eng review Perf-4.1). */
     pthread_t delayworker;
-    pthread_create(&delayworker, NULL, task_delay_send, NULL);
+    if (delay_prob > 0.0 || delay_ms > 0 || hdx_node) {
+        pthread_create(&delayworker, NULL, task_delay_send, NULL);
+    }
 
     csp_packet_t * packet = malloc(sizeof(*packet));
     assert(packet != NULL);
@@ -535,7 +653,10 @@ void zmq_proxy_lossy() {
                     zmq_msg_copy(&delayed_msg.msg, &msg);
                     printf("HDX: TX Delayed packet\n");
                     delayed_msg.timestamp_tx = hdx_powerup_start_ms + hdx_powerup_delay;
-                    csp_queue_enqueue(delay_handle, &delayed_msg, 0);
+                    if (csp_queue_enqueue(delay_handle, &delayed_msg, 0) != CSP_QUEUE_OK) {
+                        zmq_msg_close(&delayed_msg.msg);   /* delay-leak fix (eng review 2.4) */
+                        g_delay_drops++;
+                    }
                     zmq_msg_close(&msg);
                     continue;
                 }
@@ -551,8 +672,8 @@ void zmq_proxy_lossy() {
                 }
             }
 
-            /* Simulate corrupted packet */
-            if ((double)rand() / RAND_MAX < corr_prob) {
+            /* Simulate corrupted packet (rand, ungated -- NOT a reproducible mode) */
+            if (corr_prob > 0.0 && (double)rand() / RAND_MAX < corr_prob) {
                 printf("Packet corrupted\n");
                 unsigned int size = zmq_msg_size(&msg);
                 if (size > 0) {
@@ -563,22 +684,55 @@ void zmq_proxy_lossy() {
                 }
             }
 
-            /* Simulate packet loss */
-            if ((double)rand() / RAND_MAX > loss_prob) {
-                /* Simulate packet delay */
-                if ((double)rand() / RAND_MAX < delay_prob) {
+            /* Drop decision. Deterministic CSP-aware path when a match scope is set
+             * (the reproducible measurement mode, keyed by per-flow identity); else
+             * the legacy non-reproducible rand() loss. The original msg is forwarded
+             * untouched -- we parse a COPY to read the CSP id + RDP/DTP fields. */
+            int drop = 0;
+            if (match_dport >= 0) {
+                int datalen = zmq_msg_size(&msg);
+                csp_id_setup_rx(packet);
+                /* TODOS#4: no upper-bound guard on datalen (accepted risk, closed testbed) */
+                memcpy(packet->frame_begin, zmq_msg_data(&msg), datalen);
+                packet->frame_length = datalen;
+                csp_id_strip(packet);
+
+                ci_frame_t f;
+                ci_frame_from_fields(packet->id.dport, packet->id.flags,
+                                     packet->data, packet->length, &f);
+                if (ci_rule_match(&g_rule, &f)) {
+                    uint64_t idx = proxy_flow_index(packet, &f);
+                    drop = ci_rule_decide(&g_rule, idx);
+                    if (g_drop_log) {
+                        fprintf(g_drop_log, "%u,%u,%u,0x%02X,%d,%llu,%u,%d\n",
+                                csp_get_ms(), packet->id.src, packet->id.dport,
+                                packet->id.flags, f.is_rdp,
+                                (unsigned long long)idx, g_epoch, drop);
+                        fflush(g_drop_log);
+                    }
+                }
+            } else {
+                drop = !((double)rand() / RAND_MAX > loss_prob);
+            }
+
+            if (!drop) {
+                /* Simulate packet delay (rand, ungated) */
+                if (delay_prob > 0.0 && (double)rand() / RAND_MAX < delay_prob) {
                     delayed_msg_t delayed_msg = {0};
                     zmq_msg_init(&delayed_msg.msg);
                     zmq_msg_copy(&delayed_msg.msg, &msg);
-                    printf("Delayed packet\n");
                     delayed_msg.timestamp_tx = csp_get_ms() + delay_ms;
-                    csp_queue_enqueue(delay_handle, &delayed_msg, 0);
+                    if (csp_queue_enqueue(delay_handle, &delayed_msg, 0) != CSP_QUEUE_OK) {
+                        zmq_msg_close(&delayed_msg.msg);   /* delay-leak fix (eng review 2.4) */
+                        g_delay_drops++;
+                    }
                     zmq_msg_close(&msg);
                     continue;
                 }
                 zmq_msg_send(&msg, backend, 0);
+                g_kept++;
             } else {
-                printf("Packet dropped\n");
+                g_drops++;
             }
             zmq_msg_close(&msg);
         }
