@@ -15,7 +15,7 @@ package.json
 package-lock.json
 
 # local-only notes (private team internals / unreported issues)
-NOTES.local.md
+*.local.md
 
 # editor / OS
 .DS_Store
