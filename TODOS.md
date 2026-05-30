@@ -41,14 +41,17 @@
   original trip-wire comment was only on one of the three sites, understating exposure.
 
 ## 5. DTP-completion measurement confound (contributions 2/3, eng review 2026-05-30)
-- **What:** Document (or fix upstream) that lossy DTP transfers never cleanly complete:
-  `dtp_client.c:121-130` completion test is `nof_csp_packets >= expected` over RECEIVED
-  packets, so under ANY injected port-8 loss the client only ever exits via idle-timeout
-  with a partial payload.
-- **Why:** Every DTP "completion" in the exact lossy regime this instrument creates is a
-  timeout artifact, so any DTP throughput / latency-to-complete metric is confounded.
-  Must be accounted for (or the client fixed) before publishing RDP-vs-DTP numbers.
-- **Depends on:** the bug is in the team's `dtp_client` (separate repo); see NOTES.local.md.
+- **Decision recorded:** see `docs/dtp-metric.md`. The confound is verified against the real
+  `dtp_client.c`/`dtp_server.c`: connectionless, no ARQ, completion = count of RECEIVED
+  packets, so any port-8 loss -> idle-timeout with a partial payload (reproduced at p=0.1 in
+  the two-oracle loop: 1813/2038, bailed on idle timeout).
+- **Recommended metric:** report **loss** (two-oracle, unconfounded) and **goodput = useful
+  bytes per fixed window** from the APM CSV `t_ms`; NEVER time-to-complete for DTP. Compare
+  RDP vs DTP on loss + goodput, not completion time (defined for RDP, not DTP). Good news: the
+  oracles already capture everything the honest metrics need; no `dtp_client` change required.
+- **Still open:** confirm the metric with the team; flag that the count-received completion
+  test mislabels every lossy-but-useful transfer as a failure if the operational uploader
+  depends on it. The bug is in the team's `dtp_client` (separate repo); see NOTES.local.md.
 
 > Local-only notes (DTP internals, a reliability issue to raise with the team, and
 > the full review findings) are kept out of this repo - see NOTES.local.md and the
