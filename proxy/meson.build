@@ -10,7 +10,7 @@ zmq_dep = dependency('libzmq')
 # slash-command section, not here.
 proxy_csp_dep = dependency('csp', fallback: ['csp', 'csp_dep'])
 
-executable('zmqproxy-lossy',
+zmqproxy_lossy = executable('zmqproxy-lossy',
   ['zmqproxy.c'],
   c_args: ['-DZMQ_PROXY_LOSSY'],
   dependencies: [zmq_dep, proxy_csp_dep, ci_dep],

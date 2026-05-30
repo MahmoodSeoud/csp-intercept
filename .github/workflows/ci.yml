@@ -1,0 +1,41 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # Pure dependency-free lib: strict, fast, runs the 85 unit tests under UBSan.
+  # No submodules needed -- this is the layer that builds anywhere.
+  lib:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install build tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq meson ninja-build build-essential
+      - name: build + test (UBSan)
+        run: |
+          meson setup build -Db_sanitize=undefined
+          meson test -C build --print-errorlogs
+
+  # Front-ends (proxy + monitor APM): Linux-only, needs vendored CSH submodules +
+  # libzmq. Builds both artifacts and runs the determinism + forwarding E2E.
+  frontends:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: install deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq meson ninja-build build-essential libzmq3-dev libbsd-dev pkg-config
+      - name: configure + compile
+        run: |
+          meson setup build -Dfrontends=true
+          meson compile -C build
+      - name: unit + e2e tests
+        run: meson test -C build --print-errorlogs
+      - name: artifacts present
+        run: |
+          test -x build/proxy/zmqproxy-lossy
+          test -f build/apm/libcsh_csp_monitor.so
+          echo "proxy + APM built OK"
