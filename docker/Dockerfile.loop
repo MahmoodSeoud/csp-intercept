@@ -1,0 +1,23 @@
+# Linux env for the localhost two-oracle loop: builds the csp-intercept front-ends
+# AND the external DISCOSAT tooling (csh, upload_gs-server, dipp-apm) in one place so
+# the whole virtual CSP network can run in a single arm64 container. Superset of the
+# front-ends Dockerfile deps plus protobuf-c / brotli / yaml (dipp-apm) and libcurl (csh).
+FROM ubuntu:24.04
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        meson \
+        ninja-build \
+        build-essential \
+        pkg-config \
+        git \
+        libzmq3-dev \
+        libbsd-dev \
+        libcurl4-openssl-dev \
+        protobuf-c-compiler \
+        libprotobuf-c-dev \
+        libbrotli-dev \
+        libyaml-dev \
+        python3 \
+        iproute2 \
+        procps \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /work
