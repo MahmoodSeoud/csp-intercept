@@ -1,0 +1,5 @@
+# Front-ends (the monitor APM + the lossy proxy) need libcsp/CSH vendored as
+# submodules under subprojects/ plus system libzmq. Off by default so the pure
+# dependency-free lib (lib/ + tests/) builds and tests anywhere with zero deps.
+option('frontends', type: 'boolean', value: false,
+  description: 'Build the monitor APM and lossy proxy (needs libcsp/CSH submodules + libzmq)')

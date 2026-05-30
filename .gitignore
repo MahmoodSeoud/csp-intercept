@@ -1,8 +1,13 @@
 # build output
 build/
+build-*/
 *.o
 *.a
 *.so
+
+# meson-generated subproject artifacts (deps are vendored via git submodules)
+/subprojects/.wraplock
+/subprojects/packagecache/
 
 # local CSH APM install target
 local/

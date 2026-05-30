@@ -1,0 +1,12 @@
+[submodule "subprojects/csp"]
+	path = subprojects/csp
+	url = https://github.com/spaceinventor/libcsp
+[submodule "subprojects/slash"]
+	path = subprojects/slash
+	url = https://github.com/spaceinventor/slash
+[submodule "subprojects/param"]
+	path = subprojects/param
+	url = https://github.com/spaceinventor/libparam
+[submodule "subprojects/apm_csh"]
+	path = subprojects/apm_csh
+	url = https://github.com/spaceinventor/libapm_csh
