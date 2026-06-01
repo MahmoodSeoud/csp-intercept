@@ -56,13 +56,23 @@ echo "== can0-bench: $PROTO (dport $DPORT), loss=$LOSS seed=$SEED, src=$SRC dst=
 ip link show "$DEV" >/dev/null 2>&1 || { echo "FAIL: $DEV not present"; exit 1; }
 
 # --- 1) build the front-ends (idempotent) ---
+# Build log goes next to the build dir, not /tmp, so it never hits a cross-user
+# permission wall (a /tmp/can0_build.log owned by another user breaks the redirect).
+BUILD_LOG="$REPO/build/can0_build.log"
 echo "-- building front-ends --"
-if [ ! -f "$B/build.ninja" ]; then
-  meson setup "$B" "$REPO" -Dfrontends=true >/tmp/can0_build.log 2>&1 \
-    || { echo "FAIL: meson setup (see /tmp/can0_build.log)"; tail -15 /tmp/can0_build.log; exit 1; }
+# Fresh clone has empty subprojects/ (vendored CSH deps) -> meson setup would fail.
+if [ ! -e "$REPO/subprojects/csp/meson.build" ]; then
+  echo "-- fetching vendored CSH submodules (first run) --"
+  git -C "$REPO" submodule update --init --recursive >/dev/null 2>&1 \
+    || { echo "FAIL: git submodule update --init --recursive"; exit 1; }
 fi
-meson compile -C "$B" >>/tmp/can0_build.log 2>&1 \
-  || { echo "FAIL: compile (see /tmp/can0_build.log)"; tail -15 /tmp/can0_build.log; exit 1; }
+mkdir -p "$B"
+if [ ! -f "$B/build.ninja" ]; then
+  meson setup "$B" "$REPO" -Dfrontends=true >"$BUILD_LOG" 2>&1 \
+    || { echo "FAIL: meson setup (see $BUILD_LOG)"; tail -15 "$BUILD_LOG"; exit 1; }
+fi
+meson compile -C "$B" >>"$BUILD_LOG" 2>&1 \
+  || { echo "FAIL: compile (see $BUILD_LOG)"; tail -15 "$BUILD_LOG"; exit 1; }
 
 INJECT="$B/tests/e2e/ci_inject_can"
 MONSO="$B/apm/libcsh_csp_monitor.so"

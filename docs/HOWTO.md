@@ -3,6 +3,18 @@
 (New here? Read the [README](../README.md) first for what this is. This page is just
 the commands.)
 
+## First-time setup (once per clone)
+
+```sh
+git submodule update --init --recursive   # pulls the vendored CSH deps (csp/slash/param/apm_csh)
+```
+
+Native deps (Debian/Ubuntu): `sudo apt install libzmq3-dev libsocketcan-dev libbsd-dev pkg-config python3 meson ninja-build build-essential`.
+
+That's it. The test suite needs nothing else. The CAN bench (#3) additionally needs a
+**csh binary** — `scripts/can0-bench` auto-finds it at the usual DISCO2 locations; if
+yours is elsewhere, run it as `CSH=/path/to/csh scripts/can0-bench`.
+
 ## The three things you actually run
 
 ### 1. Run the test suite (proves everything compiles + works)
@@ -20,11 +32,16 @@ after any code change.
 ### 2. Monitor a real CAN bus from a csh session
 
 Drive the **real csh** with the committed init script; it joins `can0`, loads the
-monitor, starts capturing, and drops you at the `csh #` prompt:
+monitor, starts capturing, and drops you at the `csh #` prompt. Point `$CSH` at your
+csh binary (the DISCO2 build is usually at `~/disco/src/csh/builddir/csh`):
 
 ```sh
-/home/mseo/disco/src/csh/builddir/csh -i csh/init/can-monitor.csh
+CSH=~/disco/src/csh/builddir/csh
+"$CSH" -i csh/init/can-monitor.csh
 ```
+
+Note: `can0` must be up first (the DISCO2 `caninit` script does this). The monitor
+loads the APM from `build/apm/`, so run the test-suite build (#1) at least once before this.
 
 At the prompt: `info` shows `CAN0 rx:` climbing as real frames arrive;
 `csp_monitor stop` flushes the CSV; Ctrl-D exits. Watch the capture live from another
