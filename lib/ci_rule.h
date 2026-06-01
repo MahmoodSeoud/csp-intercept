@@ -71,6 +71,34 @@ static inline uint64_t ci_flow_index_rdp(uint32_t epoch, uint16_t rdp_seq) {
 int ci_rdp_seq_is_wrap(uint16_t prev_seq, uint16_t new_seq);
 
 /*
+ * Stateful per-flow index tracker. Both fault injectors (the ZMQ lossy proxy and the
+ * in-path CAN/KISS drop shim) must key their drop decision on the SAME protocol
+ * identity, or a frame the proxy would drop and one the shim would drop wouldn't line
+ * up. This holds the RDP 16-bit-seq wrap epoch (and the DTP session MTU) so the key is
+ * computed identically wherever it is used. Not thread-safe; one tracker per flow path.
+ */
+typedef struct {
+    uint16_t last_seq;       /* last RDP seq seen (for wrap detection)      */
+    int      have_last_seq;  /* 0 until the first RDP frame               */
+    uint32_t epoch;          /* RDP wrap epoch (bumped on 0xFFFF->0 cross) */
+    uint16_t dtp_mtu;        /* DTP session MTU for fragment indexing      */
+} ci_flow_tracker_t;
+
+/* Initialise a tracker. `dtp_mtu` is the negotiated DTP session MTU (e.g. 200). */
+void ci_flow_tracker_init(ci_flow_tracker_t *t, uint16_t dtp_mtu);
+
+/*
+ * Compute the per-flow drop key for a parsed frame, advancing the RDP wrap epoch as a
+ * side effect. RDP frames (ports 7/13) -> ci_flow_index_rdp(epoch, seq); DTP bulk
+ * (port 8) -> fragment index offset/(mtu-4). `data`/`len` are the CSP payload (the same
+ * bytes ci_frame_from_fields saw). Mirrors the proxy's proxy_flow_index exactly so the
+ * proxy and the shim are interchangeable oracles. Returns 0 if the trailer/offset can't
+ * be parsed (treated as flow index 0, same as the proxy).
+ */
+uint64_t ci_flow_index(ci_flow_tracker_t *t, const ci_frame_t *f,
+                       const uint8_t *data, size_t len);
+
+/*
  * Deterministic drop decision for the packet whose per-flow PROTOCOL IDENTITY is
  * `index`. Returns 1 = drop, 0 = keep.
  *

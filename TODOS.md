@@ -12,13 +12,26 @@
   alignment depend on a reconstructable capture; building the machinery around a capture
   you can't produce is wasted work.
 
-## 2. v2 - in-path nexthop shim for real UHF/KISS fault injection
-- **What:** A custom `csp_iface_t` whose `nexthop` applies `drop_rule` then delegates.
-  Drop contract: `csp_buffer_free(packet); return CSP_ERR_NONE;` + keep an own
-  injected-drop counter (returning an error code double-frees / pollutes `tx_error`).
-- **Why:** The lossy proxy only covers virtual ZMQ experiments; a real UHF/KISS path
-  needs an in-path shim. Deferred from v1.
-- **Depends on:** confirming whether the real ground link is KISS or ZMQ-bridged.
+## 2. in-path nexthop shim for real CAN/UHF/KISS fault injection - DONE (2026-06-01)
+- **Closed:** `inject/ci_drop_iface.{c,h}` is a `csp_iface_t` whose `nexthop` applies the
+  deterministic CSP-aware drop rule then delegates kept frames to a downstream real
+  interface (CAN/KISS/...). Drop contract honoured: `csp_buffer_free(packet); return
+  CSP_ERR_NONE;` with its OWN `injected_drops` counter (never `iface->drop`/`tx_error`).
+  Keyed on the same per-flow identity as the proxy via the shared `ci_flow_tracker_t`
+  (`lib/ci_rule`), so the proxy drop-log and the shim drop-log are interchangeable
+  oracle A; the drop-log CSV schema is identical (`t_ms,src,dport,csp_flags,is_rdp,
+  index,epoch,dropped`). Transport-neutral: it wraps any nexthop, so the same shim
+  covers CAN, KISS, and any future link.
+- **Verified:** `tests/e2e/drop_iface_host.c` drives the shim's nexthop with crafted
+  RDP frames + a counting stub downstream (no CAN hardware / vcan / root needed in CI).
+  Asserts the drop contract, leak-freedom (`csp_buffer_remaining` returns to baseline),
+  determinism (same seed -> identical drop set), input partition (dropped XOR delegated),
+  and out-of-scope passthrough. Part of the 9/9 green suite.
+- **Still open (real-link demo):** running the shim in front of a live `csp add can`
+  on a real/`vcan` bus (creating `vcan0` needs root; the only hardware bus here, `can0`,
+  carries live DISCO2 traffic and must not be injected onto). The LOGIC is fully tested;
+  what's unproven is the end-to-end wiring on an actual CAN interface. See
+  `docs/can-kiss-injection.md`.
 
 ## 3. Contributions 2/3 - reuse the existing DTP loss oracle
 - **What:** The team's DTP tooling already tracks received vs missing segments per

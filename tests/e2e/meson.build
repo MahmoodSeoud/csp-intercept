@@ -97,3 +97,16 @@ test('two-oracle agreement DTP (proxy drop-log vs live APM observed, port 8)',
   find_program('two_oracle_dtp.sh'),
   args: [zmqproxy_lossy, ci_gen_dtp, ci_monitor_host],
   timeout: 120)
+
+# In-path drop shim (CAN/KISS injection, TODOS#2): drives ci_drop_iface's nexthop
+# directly with crafted RDP frames + a counting stub downstream -- no CAN hardware,
+# no vcan, no root (the real-vcan demo needs sudo and is documented separately). Asserts
+# the drop contract (free + CSP_ERR_NONE, no leak), determinism (same seed -> identical
+# drop set), input partition (dropped XOR delegated), and out-of-scope passthrough.
+# ci_drop_dep brings csp + ci + the shim; e2e_threads for csp's posix arch.
+drop_iface_host = executable('drop_iface_host', 'drop_iface_host.c',
+  dependencies: [ci_drop_dep, e2e_threads],
+  override_options: ['c_std=gnu11', 'werror=false'])
+
+test('in-path drop shim (deterministic CAN/KISS injection, leak-free, partitions input)',
+  drop_iface_host, timeout: 60)

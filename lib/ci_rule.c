@@ -1,5 +1,6 @@
 #include "ci_rule.h"
 #include "ci_rdp.h"
+#include "ci_dtp.h"
 #include "ci_prng.h"
 
 int ci_frame_from_fields(uint16_t dport, uint8_t csp_flags,
@@ -46,6 +47,42 @@ int ci_rule_match(const ci_drop_rule_t *r, const ci_frame_t *f) {
         }
     }
     return 1;
+}
+
+void ci_flow_tracker_init(ci_flow_tracker_t *t, uint16_t dtp_mtu) {
+    if (t == NULL) {
+        return;
+    }
+    t->last_seq      = 0;
+    t->have_last_seq = 0;
+    t->epoch         = 0;
+    t->dtp_mtu       = dtp_mtu;
+}
+
+uint64_t ci_flow_index(ci_flow_tracker_t *t, const ci_frame_t *f,
+                       const uint8_t *data, size_t len) {
+    if (t == NULL || f == NULL) {
+        return 0;
+    }
+    if (f->is_rdp) {
+        ci_rdp_header_t h;
+        if (ci_rdp_parse_trailer(data, len, &h) == 0) {
+            /* Advance the wrap epoch exactly as the proxy does (proxy_flow_index). */
+            if (t->have_last_seq && ci_rdp_seq_is_wrap(t->last_seq, h.seq)) {
+                t->epoch++;
+            }
+            t->last_seq      = h.seq;
+            t->have_last_seq = 1;
+            return ci_flow_index_rdp(t->epoch, h.seq);
+        }
+        return 0;
+    }
+    /* DTP bulk (port 8): leading uint32 LE byte-offset -> fragment index. */
+    uint32_t off = 0, frag = 0;
+    if (ci_dtp_parse_offset(data, len, &off) == 0) {
+        ci_dtp_fragment_index(off, t->dtp_mtu, &frag);
+    }
+    return frag;
 }
 
 int ci_rule_decide(const ci_drop_rule_t *r, uint64_t index) {

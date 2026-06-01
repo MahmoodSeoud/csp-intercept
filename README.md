@@ -14,14 +14,36 @@ Test plan: `~/.gstack/projects/csp-intercept/mahmood-unknown-eng-review-test-pla
 | `lib/` shared parse + rule + measurement | **done, 85 checks passing** |
 | `apm/` promisc monitor (CSH APM) | **done** (headless start/stop E2E) |
 | `proxy/` lossy zmqproxy (vendored + extended) | **done** (determinism + forwarding + bound-guard E2E) |
+| `inject/` in-path drop shim (CAN/KISS injection) | **done** (deterministic drop + leak-free E2E) |
 | two-oracle agreement (proxy drop-log vs live APM) | **done** (native E2E, RDP + DTP) |
 | CI | **done, green** (ubuntu: `lib` + `frontends` jobs) |
 
-The full E2E suite is **8/8 green**. The two-oracle loop -- the core claim that the
-proxy's injected drops and the APM's observed loss agree exactly -- is proven on a
-synthetic stream for both protocol paths: RDP (port 13) and the DTP bulk data path
-(port 8). What's left is field work, not core logic: an on-target run against a real
-uploader/DISCO2 traffic. See `TODOS.md`.
+The full E2E suite is **9/9 green**. The two-oracle loop -- the core claim that the
+injected drops and the APM's observed loss agree exactly -- is proven on a synthetic
+stream for both protocol paths: RDP (port 13) and the DTP bulk data path (port 8). What's
+left is field work, not core logic: an on-target run against a real uploader/DISCO2
+traffic. See `TODOS.md`.
+
+### Transport coverage
+
+The monitor APM is transport-agnostic: `csp_route_work` clones every routed packet into
+the promiscuous queue regardless of which interface it arrived on, and `lib/` parses the
+CSP packet after the interface reassembles it. So **monitoring works over ZMQ, CAN, and
+KISS** -- you only enable promiscuous mode on filtered transports.
+
+| Transport | Monitor sees all traffic | Fault injection |
+|-----------|--------------------------|-----------------|
+| ZMQ (zmqhub) | with `csp add zmq -p` (else address-filtered) | `proxy/zmqproxy-lossy` (XSUB/XPUB broker) |
+| CAN (socketcan) | in promiscuous mode (`can_mask=0x0000`) | `inject/` in-path drop shim |
+| KISS (serial) | always (no address filter) | `inject/` in-path drop shim |
+
+Injection differs by medium. ZMQ has a broker you can make lossy in the middle; a real
+CAN/KISS link does not, so loss must be injected **in-path** on a node's own transmit.
+`inject/ci_drop_iface` is a `csp_iface_t` shim whose nexthop applies the same
+deterministic, per-flow-keyed drop rule as the proxy, then delegates kept frames to the
+real downstream interface (CAN/KISS/...). Because both injectors key on the same protocol
+identity (RDP seq + wrap epoch / DTP fragment index, shared in `lib/ci_rule`), the proxy
+drop-log and the shim drop-log are interchangeable oracle A.
 
 ## What's here
 
@@ -37,9 +59,13 @@ header comments for file:line provenance).
   port 8, connectionless/unreliable; fragment = offset/(mtu-4)).
 - `ci_rule.{h,c}` - the drop rule: match by port / RDP-SYN, decide drop/keep
   deterministically per packet index (or from a recorded replay vector); also the
-  per-flow reproducibility key (RDP seq + wrap epoch / DTP fragment index).
+  per-flow reproducibility key + tracker (RDP seq + wrap epoch / DTP fragment index),
+  shared by both the proxy and the in-path shim.
 - `ci_meas.{h,c}` - loss/dup/reorder sequence tracking, observed-at-tap RTT pairing,
   and the `MEASUREMENT_SUSPECT` flag (so instrument loss is not mistaken for link loss).
+
+`inject/ci_drop_iface.{c,h}` is the in-path drop shim: a `csp_iface_t` for CAN/KISS
+fault injection (where the ZMQ proxy cannot reach). See `docs/can-kiss-injection.md`.
 
 ## What this studies
 
