@@ -1,20 +1,7 @@
-# HOWTO — what this repo is and what to run
+# HOWTO — what to run
 
-csp-intercept is a **CSP-aware instrument** for the DISCO2 link. Two halves:
-
-- **Monitor** (`apm/` → `libcsh_csp_monitor.so`): a CSH APM that watches a CSP bus
-  promiscuously and logs every RDP (port 13) / DTP (port 8) packet it sees to a CSV.
-  Transport-agnostic: works over ZMQ, CAN, KISS.
-- **Fault injection**: deliberately drops a reproducible subset of frames, so you can
-  measure RDP-vs-DTP behaviour under known loss.
-  - `proxy/zmqproxy-lossy` — for a virtual ZMQ bus (a lossy broker).
-  - `inject/ci_drop_iface` — in-path drop shim for a real CAN/KISS link (no broker).
-
-The core claim ("**two-oracle agreement**"): the injector's drop-log and the monitor's
-observed set must partition the traffic exactly — every frame is dropped XOR observed,
-none in both. If they agree, the loss measurement is trustworthy.
-
----
+(New here? Read the [README](../README.md) first for what this is. This page is just
+the commands.)
 
 ## The three things you actually run
 
