@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+#
+# can0-bench - one-command two-oracle bench on the REAL flatsat CAN bus (can0).
+#
+# Builds the front-ends, then runs the full instrument over the real can0:
+#   * a real csh node joins can0 in promiscuous mode and runs the csp_monitor APM
+#     (oracle B: the frames it observes), filtered to OUR test flow,
+#   * ci_inject_can transmits a deterministic RDP (or DTP) stream THROUGH the in-path
+#     drop shim onto can0 (oracle A: the shim drop-log), dropping a reproducible subset,
+#   * the two oracles are joined and must agree: no dropped frame may be observed.
+#
+# Safe on the flatsat: our flow uses src=10 -> dst=20 (both FREE; occupied addrs are
+# 0/15=this host, 33/63=pcdu, 34=obc-payload). dst=20 doesn't exist, so no real node
+# processes our frames; the in-path shim only drops OUR own TX, never real traffic.
+# The join filters oracle B to src==10, so live DISCO2 traffic can't pollute it.
+# Read-only otherwise; needs NO root (uses -b 0 so csh skips the privileged bitrate set).
+#
+# Usage:
+#   scripts/can0-bench              # RDP (dport 13), default
+#   scripts/can0-bench dtp          # DTP bulk (port 8)
+#   scripts/can0-bench rdp 0.5 7    # protocol, loss prob, seed
+set -uo pipefail
+
+cd "$(dirname "$0")/.."
+REPO="$PWD"
+
+# --- args ---
+PROTO="${1:-rdp}"
+LOSS="${2:-0.3}"
+SEED="${3:-1}"
+case "$PROTO" in
+  rdp) DPORT=13 ;;
+  dtp) DPORT=8  ;;
+  *) echo "usage: can0-bench [rdp|dtp] [loss] [seed]"; exit 1 ;;
+esac
+
+DEV=can0
+SRC=10; DST=20; N=500; MTU=200
+# Find a prebuilt csh. Independent of $HOME so it works as any user (incl. root).
+if [ -z "${CSH:-}" ]; then
+  for c in /home/mseo/disco/src/csh/builddir/csh \
+           /home/mseo/thesis/csh/builddir/csh \
+           "$HOME/disco/src/csh/builddir/csh"; do
+    [ -x "$c" ] && { CSH="$c"; break; }
+  done
+fi
+CSH="${CSH:-/home/mseo/disco/src/csh/builddir/csh}"
+B="$REPO/build"
+APMDIR=/tmp/myapm
+DROP=/tmp/can0_drop.csv; APM=/tmp/can0_apm.csv
+
+echo "== can0-bench: $PROTO (dport $DPORT), loss=$LOSS seed=$SEED, src=$SRC dst=$DST =="
+
+# --- 0) sanity: csh + a quiet check we won't collide ---
+[ -x "$CSH" ] || { echo "FAIL: csh not found at $CSH (set CSH=/path/to/csh)"; exit 1; }
+ip link show "$DEV" >/dev/null 2>&1 || { echo "FAIL: $DEV not present"; exit 1; }
+
+# --- 1) build the front-ends (idempotent) ---
+echo "-- building front-ends --"
+if [ ! -f "$B/build.ninja" ]; then
+  meson setup "$B" "$REPO" -Dfrontends=true >/tmp/can0_build.log 2>&1 \
+    || { echo "FAIL: meson setup (see /tmp/can0_build.log)"; tail -15 /tmp/can0_build.log; exit 1; }
+fi
+meson compile -C "$B" >>/tmp/can0_build.log 2>&1 \
+  || { echo "FAIL: compile (see /tmp/can0_build.log)"; tail -15 /tmp/can0_build.log; exit 1; }
+
+INJECT="$B/tests/e2e/ci_inject_can"
+MONSO="$B/apm/libcsh_csp_monitor.so"
+[ -x "$INJECT" ] || { echo "FAIL: $INJECT not built"; exit 1; }
+[ -f "$MONSO" ]  || { echo "FAIL: $MONSO not built"; exit 1; }
+
+mkdir -p "$APMDIR"; cp "$MONSO" "$APMDIR/"
+rm -f "$DROP" "$APM" /tmp/can0_session.log /tmp/can0_inject.log
+
+# --- 2) monitor: real csh node on can0 (promisc), csp_monitor on our dport (oracle B) ---
+echo "-- starting csh monitor on $DEV (promisc, dport $DPORT) --"
+cat > /tmp/can0_run.csh <<EOF
+csp init
+csp add can -p -c $DEV -b 0 19
+apm load -p $APMDIR
+sleep 500
+csp_monitor start -d $DPORT -m $MTU -o $APM
+sleep 6000
+csp_monitor stop
+sleep 200
+EOF
+timeout 22 script -qec "$CSH -i /tmp/can0_run.csh" /dev/null </dev/null >/tmp/can0_session.log 2>&1 &
+MON=$!
+sleep 3   # let csh init + add can + apm load + monitor start
+
+# --- 3) inject our deterministic stream through the drop shim (oracle A) ---
+echo "-- injecting $N $PROTO frames through the drop shim --"
+"$INJECT" "$DEV" "$SRC" "$DST" "$DPORT" "$N" "$MTU" "$LOSS" "$SEED" "$DROP" >/tmp/can0_inject.log 2>&1
+sleep 2
+wait "$MON" 2>/dev/null || true
+
+# --- 4) join the two oracles (filter oracle B to OUR src, so real traffic is excluded) ---
+if [ "$DPORT" = "8" ]; then
+  # DTP rows: is_rdp(col6)=0, dport(col4)=8, our src(col2)=SRC, frag in col 11
+  awk -F, -v s="$SRC" '/^#/{next} $6==0 && $4==8 && $2==s {print $11}' "$APM" 2>/dev/null | sort -n > /tmp/can0_obs
+else
+  # RDP rows: is_rdp(col6)=1, our src(col2)=SRC, seq in col 8
+  awk -F, -v s="$SRC" '/^#/{next} $6==1 && $2==s {print $8}' "$APM" 2>/dev/null | sort -n > /tmp/can0_obs
+fi
+awk -F, '$8==1{print $6}' "$DROP" 2>/dev/null > /tmp/can0_drp
+awk -F, '$8==0{print $6}' "$DROP" 2>/dev/null > /tmp/can0_kpt
+
+dropped=$(grep -c . /tmp/can0_drp)
+kept=$(grep -c . /tmp/can0_kpt)
+observed=$(grep -c . /tmp/can0_obs)
+# Set intersections via awk (numeric flow indices; comm would need lexical sort).
+overlap=$(awk 'FNR==NR{a[$1]=1;next} ($1 in a){c++} END{print c+0}' /tmp/can0_drp /tmp/can0_obs)
+kept_obs=$(awk 'FNR==NR{a[$1]=1;next} ($1 in a){c++} END{print c+0}' /tmp/can0_kpt /tmp/can0_obs)
+
+echo
+echo "== RESULT =="
+echo "injector (oracle A): dropped $dropped, kept $kept of $N sent"
+echo "csh monitor (oracle B, src=$SRC only): observed $observed frames"
+echo "dropped-and-observed (must be 0): $overlap"
+echo "kept-and-observed: $kept_obs / $kept"
+
+if [ "$dropped" -lt 10 ]; then
+  echo "INCONCLUSIVE: injector logged too few drops -- check the build/run logs."; exit 1
+fi
+if [ "$observed" -eq 0 ]; then
+  echo "INCONCLUSIVE: monitor observed none of our frames. Bus reachable? See /tmp/can0_session.log"; exit 1
+fi
+if [ "$overlap" -eq 0 ] && [ "$kept" -ge 100 ] && [ "$kept_obs" -ge $((kept * 80 / 100)) ]; then
+  echo "CAN0 TWO-ORACLE BENCH: PASS (real csh monitor + in-path shim agree on the flatsat bus)"
+  exit 0
+fi
+echo "CAN0 TWO-ORACLE BENCH: FAIL"
+exit 1

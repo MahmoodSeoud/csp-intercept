@@ -110,3 +110,11 @@ drop_iface_host = executable('drop_iface_host', 'drop_iface_host.c',
 
 test('in-path drop shim (deterministic CAN/KISS injection, leak-free, partitions input)',
   drop_iface_host, timeout: 60)
+
+# CAN bench injector: opens a real socketcan iface (sandbox vcan0), wraps it with the
+# drop shim, and transmits a deterministic RDP/DTP stream through it. NOT a registered
+# test (needs vcan0 + root); built so scripts/can-bench can drive a live two-oracle loop
+# over CAN with the csh monitor. ci_drop_dep brings csp + ci + the shim.
+ci_inject_can = executable('ci_inject_can', 'ci_inject_can.c',
+  dependencies: [ci_drop_dep, e2e_threads],
+  override_options: ['c_std=gnu11', 'werror=false'])

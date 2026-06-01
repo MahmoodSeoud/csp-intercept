@@ -88,42 +88,30 @@ cc -std=c11 -Wall -Wextra -Werror -I lib lib/ci_rdp.c lib/ci_dtp.c lib/ci_rule.c
 ```
 
 The front-ends (proxy + APM + their E2E tests) are **Linux-only** -- libcsp/CSH do
-not build on a macOS host. On a Linux host they build **natively** (no Docker needed);
-this is the fastest local loop and runs the full E2E suite:
+not build on a macOS host. On a Linux host they build natively and run the full E2E
+suite (9/9: lib + proxy + APM + RDP/DTP two-oracle + in-path drop shim):
 
 ```sh
 git submodule update --init --recursive     # vendored CSH deps (csp/slash/param/apm_csh)
 meson setup build -Dfrontends=true
 meson compile -C build
-meson test -C build --print-errorlogs       # 7/7: lib + proxy + APM + two-oracle
+meson test -C build --print-errorlogs
 ```
 
 Native deps: `libzmq3-dev`, `libsocketcan-dev` (`libbsd-dev` on CI), `pkg-config`,
 `python3`, meson, ninja, a C toolchain.
 
-On a macOS host (or to mirror CI exactly) build in a container instead:
-
-```sh
-scripts/lbuild          # docker: compile + run the front-end test suite
-scripts/lbuild clean    # drop the incremental build volume first
-```
-
-The two-oracle agreement test (`tests/e2e/two_oracle.sh` driving `ci_monitor_host`, a
-real libcsp node that joins the lossy proxy and runs the actual `csp_monitor` APM) runs
-as part of `meson test` -- it needs no csh and no external `upload_gs-server`. The full
-DTP-on-port-8 loop with a real uploader (`scripts/two-oracle-loop`) does need Docker plus
-the external CSH/uploader trees.
+See **`docs/HOWTO.md`** for the three things you actually run (test suite, monitor a CAN
+bus from csh, run the two-oracle bench) and what each one tells you.
 
 ## Next
 
-The instrument core is done and the two-oracle loop is proven natively on a synthetic
-RDP stream. The remaining work is integration and the field result:
+The instrument is proven natively on synthetic RDP + DTP streams, and the two-oracle
+bench passes on the real flatsat CAN bus (`scripts/can0-bench`). The remaining work is
+the field result:
 
-1. A DTP-on-port-8 two-oracle variant (the bulk path is parsed + unit-tested but not yet
-   exercised end-to-end in the green suite).
-2. An on-target run: a real `upload_gs-server` -> `zmqproxy-lossy` -> `dtp_client`
-   transfer with the monitor APM draining, then join the proxy drop-vector against the
-   APM CSV by flow identity (`scripts/two-oracle-loop`, needs Docker + the external trees).
-3. A two-ended timestamped PCAP capture of a real DISCO2 pass.
+1. Monitor / inject during a **real DTP transfer** on the flatsat (a genuine
+   `dtp_client` upload) so the numbers come from the real software, not a synthetic stream.
+2. A two-ended timestamped PCAP capture of a real DISCO2 pass.
 
 See `TODOS.md`.

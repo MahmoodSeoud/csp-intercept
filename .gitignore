@@ -26,3 +26,4 @@ package-lock.json
 .DS_Store
 compile_commands.json
 .cache/
+captures/
