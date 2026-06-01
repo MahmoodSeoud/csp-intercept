@@ -1,0 +1,39 @@
+#!/bin/bash
+# install - build the front-ends and drop the csp_monitor APM where csh loads it.
+#
+# Mirrors dipp-apm/csh: meson setup with --libdir=$HOME/.local/lib/csh, then
+# `ninja install`. The monitor (libcsh_csp_monitor.so) lands in the csh APM dir so
+# `apm load` finds it; the lossy proxy (zmqproxy-lossy) lands in $HOME/.local/bin.
+#
+# Usage:  ./install            # build + install to ~/.local
+#         PREFIX=/somewhere ./install
+set -e
+
+cd "$(cd -- "$(dirname -- "$0")" && pwd)"
+
+PREFIX="${PREFIX:-$HOME/.local}"
+LIBDIR="lib/csh"                       # so the .so installs to $PREFIX/lib/csh (csh's APM path)
+BUILDDIR="${BUILDDIR:-build}"
+
+# Vendored CSH deps (csp/slash/param/apm_csh) — a fresh clone has empty subprojects/.
+if [ ! -f subprojects/csp/meson.build ]; then
+  echo "-- fetching vendored CSH submodules (first run) --"
+  git submodule update --init --recursive
+fi
+
+# Setup (reconfigure if the build dir already exists), front-ends ON.
+if [ -d "$BUILDDIR" ] && [ -f "$BUILDDIR/build.ninja" ]; then
+  meson setup "$BUILDDIR" --reconfigure -Dfrontends=true --prefix="$PREFIX" --libdir="$LIBDIR"
+else
+  rm -rf "$BUILDDIR"
+  meson setup "$BUILDDIR" -Dfrontends=true --prefix="$PREFIX" --libdir="$LIBDIR"
+fi
+
+# Build + install everything marked install:true (the APM .so and the proxy).
+ninja -C "$BUILDDIR" install
+
+echo ""
+echo "Build and installation completed successfully!"
+echo "Installed to:"
+echo "  $PREFIX/lib/csh/libcsh_csp_monitor.so   (load in csh with: apm load)"
+echo "  $PREFIX/bin/zmqproxy-lossy              (the lossy proxy)"

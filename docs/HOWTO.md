@@ -15,6 +15,19 @@ That's it. The test suite needs nothing else. The CAN bench (#3) additionally ne
 **csh binary** — `scripts/can0-bench` auto-finds it at the usual DISCO2 locations; if
 yours is elsewhere, run it as `CSH=/path/to/csh scripts/can0-bench`.
 
+## Install the monitor for csh (`./install`)
+
+To use the monitor from a real csh session, install it where csh's `apm load` looks
+(`~/.local/lib/csh`), same as dipp-apm/csh:
+
+```sh
+./install
+```
+
+This builds the front-ends and drops `libcsh_csp_monitor.so` into `~/.local/lib/csh/`
+and `zmqproxy-lossy` into `~/.local/bin/`. Then in csh: `apm load` finds the monitor.
+(If `~/.local/lib/csh` is root-owned, run `sudo chown -R $USER ~/.local/lib` once first.)
+
 ## The three things you actually run
 
 ### 1. Run the test suite (proves everything compiles + works)
