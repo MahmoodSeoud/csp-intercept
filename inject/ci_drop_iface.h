@@ -16,6 +16,19 @@
  *
  * Reproducibility: identical seed + identical per-flow identities => identical drop
  * set as the proxy, so the proxy drop-log and this shim are interchangeable oracle A.
+ *
+ * IMPORTANT -- deterministic-by-identity, not per-attempt. The drop decision is a pure
+ * function of (seed, per-flow index): the SAME RDP seq (same wrap epoch) or DTP fragment
+ * offset is dropped on EVERY transmission. With the one-shot test generators (each index
+ * emitted once) this is exactly what makes the two oracles agree. But pointed in-path at
+ * a REAL reliable transfer, a dropped index is re-dropped on every retransmit, so that
+ * packet never gets through and the transfer stalls forever. To model loss a protocol can
+ * recover from (the realistic RDP/DTP-under-loss case), use a per-attempt loss source
+ * (e.g. the agent-side trace-driven loss_filter), not this identity-keyed shim.
+ *
+ * Single-flow scope: one tracker per shim, mutated unsynchronised in the nexthop. The
+ * rule's match scope MUST select exactly one RDP flow -- multiple in-scope RDP
+ * connections interleave seqs through one wrap epoch and miscompute indices.
  */
 #ifndef CI_DROP_IFACE_H
 #define CI_DROP_IFACE_H

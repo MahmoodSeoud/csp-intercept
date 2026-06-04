@@ -132,7 +132,10 @@ int main(void) {
     CHECK(baseline > 300, "baseline pool small: %d", baseline);
 
     const int N = 500;
-    static uint8_t drop1[512], drop2[512];
+    /* Drop buffers and stub_seen are all indexed by seq in [0,N); keep them on the
+     * same cap so bumping N can never silently overrun one of them. */
+    CHECK(N <= MAXSEQ, "N (%d) exceeds MAXSEQ (%d) -- raise MAXSEQ", N, MAXSEQ);
+    static uint8_t drop1[MAXSEQ], drop2[MAXSEQ];
 
     /* ---- run 1 ---- */
     uint64_t nd1 = run_rdp(1, N, drop1);
