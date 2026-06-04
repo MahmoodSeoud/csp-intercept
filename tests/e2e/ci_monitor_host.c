@@ -19,8 +19,8 @@
  * (CSP_ZMQPROXY_SUBSCRIBE_PORT 6000), subscribing to ALL frames (no addr filter --
  * csp_if_zmqhub.c:197), so we see ci_gen's dst=20 traffic even though our addr != 20.
  *
- * Usage: ci_monitor_host <host> <addr> <dport> <out.csv> <run_ms>
- *   defaults: localhost 19 13 apm.csv 4000
+ * Usage: ci_monitor_host <host> <frontport> <backport> <addr> <dport> <out.csv> <run_ms>
+ *   defaults: 127.0.0.1 6000 7000 19 13 apm.csv 4000
  */
 #define _GNU_SOURCE
 #include <stdio.h>

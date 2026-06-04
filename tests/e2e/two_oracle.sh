@@ -76,7 +76,10 @@ awk '
 
 # Coverage: of the frames the proxy KEPT, how many did the monitor observe? Slow-joiner
 # may cost a few at the very start, so require a strong majority rather than 100%.
-comm_kept_obs=$(comm -12 "$TMP/kept_idx" "$TMP/observed_idx" | wc -l | tr -d ' ')
+# Intersect via awk (numeric flow indices; comm needs lexical sort, so -n input would
+# undercount on sparse indices -- same reason can0-bench uses awk).
+comm_kept_obs=$(awk 'FNR==NR{a[$1]=1;next} ($1 in a){c++} END{print c+0}' \
+                  "$TMP/kept_idx" "$TMP/observed_idx")
 kept=$(wc -l < "$TMP/kept_idx" | tr -d ' ')
 echo "kept frames observed by monitor: ${comm_kept_obs}/${kept}"
 if [ "$kept" -lt 100 ]; then
