@@ -27,3 +27,7 @@ package-lock.json
 compile_commands.json
 .cache/
 captures/
+
+# python tooling (scripts/)
+__pycache__/
+*.pyc
