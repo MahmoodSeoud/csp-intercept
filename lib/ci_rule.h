@@ -82,9 +82,19 @@ typedef struct {
     int      have_last_seq;  /* 0 until the first RDP frame               */
     uint32_t epoch;          /* RDP wrap epoch (bumped on 0xFFFF->0 cross) */
     uint16_t dtp_mtu;        /* DTP session MTU for fragment indexing      */
+    uint16_t dtp_overhead;   /* DTP data-header overhead (4 dipp / 8 satDeploy) */
 } ci_flow_tracker_t;
 
-/* Initialise a tracker. `dtp_mtu` is the negotiated DTP session MTU (e.g. 200). */
+/*
+ * Initialise a tracker with an explicit DTP data-header overhead (CI_DTP_OVERHEAD_DIPP
+ * or CI_DTP_OVERHEAD_SATDEPLOY). The injector and the monitor MUST use the same overhead
+ * for a given transfer, or the per-flow fragment index (and thus the two-oracle) silently
+ * misaligns on satDeploy. `dtp_mtu` is the negotiated DTP session MTU (e.g. 200).
+ */
+void ci_flow_tracker_init_ovh(ci_flow_tracker_t *t, uint16_t dtp_mtu,
+                              uint16_t dtp_overhead);
+
+/* Convenience: the dipp 4-byte-header default (overhead = CI_DTP_OVERHEAD_DIPP). */
 void ci_flow_tracker_init(ci_flow_tracker_t *t, uint16_t dtp_mtu);
 
 /*

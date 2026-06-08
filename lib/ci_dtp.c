@@ -12,10 +12,15 @@ int ci_dtp_parse_offset(const uint8_t *data, size_t len, uint32_t *offset_out) {
     return 0;
 }
 
-int ci_dtp_fragment_index(uint32_t offset, uint16_t mtu, uint32_t *frag_out) {
-    if (frag_out == NULL || mtu <= CI_DTP_OFFSET_SIZE) {
+int ci_dtp_fragment_index_ovh(uint32_t offset, uint16_t mtu, uint16_t overhead,
+                              uint32_t *frag_out) {
+    if (frag_out == NULL || mtu <= overhead) {
         return -1;
     }
-    *frag_out = offset / (uint32_t)(mtu - CI_DTP_OFFSET_SIZE);
+    *frag_out = offset / (uint32_t)(mtu - overhead);
     return 0;
+}
+
+int ci_dtp_fragment_index(uint32_t offset, uint16_t mtu, uint32_t *frag_out) {
+    return ci_dtp_fragment_index_ovh(offset, mtu, CI_DTP_OVERHEAD_DIPP, frag_out);
 }

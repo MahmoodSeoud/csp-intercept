@@ -49,7 +49,8 @@ int ci_rule_match(const ci_drop_rule_t *r, const ci_frame_t *f) {
     return 1;
 }
 
-void ci_flow_tracker_init(ci_flow_tracker_t *t, uint16_t dtp_mtu) {
+void ci_flow_tracker_init_ovh(ci_flow_tracker_t *t, uint16_t dtp_mtu,
+                              uint16_t dtp_overhead) {
     if (t == NULL) {
         return;
     }
@@ -57,6 +58,11 @@ void ci_flow_tracker_init(ci_flow_tracker_t *t, uint16_t dtp_mtu) {
     t->have_last_seq = 0;
     t->epoch         = 0;
     t->dtp_mtu       = dtp_mtu;
+    t->dtp_overhead  = dtp_overhead;
+}
+
+void ci_flow_tracker_init(ci_flow_tracker_t *t, uint16_t dtp_mtu) {
+    ci_flow_tracker_init_ovh(t, dtp_mtu, CI_DTP_OVERHEAD_DIPP);
 }
 
 uint64_t ci_flow_index(ci_flow_tracker_t *t, const ci_frame_t *f,
@@ -80,7 +86,7 @@ uint64_t ci_flow_index(ci_flow_tracker_t *t, const ci_frame_t *f,
     /* DTP bulk (port 8): leading uint32 LE byte-offset -> fragment index. */
     uint32_t off = 0, frag = 0;
     if (ci_dtp_parse_offset(data, len, &off) == 0) {
-        ci_dtp_fragment_index(off, t->dtp_mtu, &frag);
+        ci_dtp_fragment_index_ovh(off, t->dtp_mtu, t->dtp_overhead, &frag);
     }
     return frag;
 }

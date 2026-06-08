@@ -74,6 +74,22 @@ static void test_dtp_parse(void) {
     CHECK(ci_dtp_fragment_index(64, 4, &frag) == -1, "dtp mtu<=4 -> -1");
     CHECK(ci_dtp_parse_offset(buf, 3, &off) == -1, "dtp len<4 -> -1");
 
+    /* satDeploy libdtp: 8-byte header. Same offset field; divisor is (mtu-8). */
+    CHECK(ci_dtp_fragment_index_ovh(60, 68, CI_DTP_OVERHEAD_SATDEPLOY, &frag) == 0 && frag == 1,
+          "dtp satDeploy(8): frag = 60/(68-8) = 1");
+    CHECK(ci_dtp_fragment_index_ovh(0, 68, CI_DTP_OVERHEAD_SATDEPLOY, &frag) == 0 && frag == 0,
+          "dtp satDeploy(8): frag 0 at offset 0");
+    CHECK(ci_dtp_fragment_index_ovh(64, 8, CI_DTP_OVERHEAD_SATDEPLOY, &frag) == -1,
+          "dtp satDeploy(8): mtu<=overhead -> -1");
+    /* the 4-byte wrapper must equal an explicit overhead=4 */
+    uint32_t f4a = 99, f4b = 77;
+    CHECK(ci_dtp_fragment_index(64, 68, &f4a) == 0
+          && ci_dtp_fragment_index_ovh(64, 68, CI_DTP_OVERHEAD_DIPP, &f4b) == 0
+          && f4a == f4b,
+          "dtp 4-byte wrapper == explicit overhead=4");
+    CHECK(CI_DTP_OVERHEAD_DIPP == 4 && CI_DTP_OVERHEAD_SATDEPLOY == 8,
+          "DTP overhead constants");
+
     CHECK(CI_DTP_DATA_PORT == 8 && CI_DTP_CONTROL_PORT == 7 && CI_DIPP_META_PORT == 13,
           "DTP/DIPP port constants");
 }
