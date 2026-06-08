@@ -66,6 +66,21 @@
   test mislabels every lossy-but-useful transfer as a failure if the operational uploader
   depends on it. The bug is in the team's `dtp_client` (separate repo); see NOTES.local.md.
 
+## 6. Multi-pass / blackout schedules to exercise satDeploy cross-pass resume (eng review 2026-06-07)
+- **What:** Add multi-pass schedule support to the measurement harness: pass -> blackout ->
+  partial-state pass, so a transfer is interrupted and resumed across passes.
+- **Why:** The parametric burst-loss sweep (`~/.gstack/projects/MahmoodSeoud-csp-intercept/mseo-master-plan-measurement-20260607.md`)
+  tests within-session gap re-request (satDeploy re-requests dropped intervals, naive upload
+  does not). But satDeploy's headline feature is cross-pass RESUME. A single per-pass loss
+  rate never interrupts+resumes, so it cannot demonstrate resume. This schedule is what proves
+  the "survives intermittent links" thesis claim.
+- **Context:** satDeploy persists a recv-bitmap sidecar on SATPUSH_PARTIAL and reloads it on
+  the next attempt (`satpush_pull.c:240-347`, session_state_load/save). The harness must start
+  a transfer, kill the link mid-flight, restart, and confirm satDeploy resumes from the sidecar
+  while naive upload restarts from zero. Measure delivered-bytes-per-pass and passes-to-completion
+  via the independent two-oracle.
+- **Depends on:** the sweep (T3/T4) and the monitor 8-byte DTP header fix (T5) landing first.
+
 > Local-only notes (DTP internals, a reliability issue to raise with the team, and
 > the full review findings) are kept out of this repo - see NOTES.local.md and the
 > design doc under ~/.gstack/projects/csp-intercept/.
