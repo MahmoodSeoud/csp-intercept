@@ -128,3 +128,12 @@ test('in-path drop shim (deterministic CAN/KISS injection, leak-free, partitions
 ci_inject_can = executable('ci_inject_can', 'ci_inject_can.c',
   dependencies: [ci_drop_dep, e2e_threads],
   override_options: ['c_std=gnu11', 'werror=false'])
+
+# T4 loss injector: a CSP bridge (ingress zmq/can -> [T7 shim on egress] -> egress zmq/can)
+# that drops a CSP-aware, per-attempt subset of the uplink before the real bus, with NO
+# source changes to any uploader (it points its existing -z/-c flag at our ingress). Egress
+# is selectable so the bridge+shim+oracle path is verifiable with no root (zmq egress) and
+# then run for real against can0. Links zmq (zmqhub ingress/egress) + the shim/ci lib.
+ci_inject_bridge = executable('ci_inject_bridge', 'ci_inject_bridge.c',
+  dependencies: [ci_drop_dep, e2e_zmq, e2e_threads],
+  override_options: ['c_std=gnu11', 'werror=false'])
