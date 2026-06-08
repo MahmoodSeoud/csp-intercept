@@ -58,6 +58,7 @@ int main(int argc, char **argv) {
     const char *dport   = (argc > 5) ? argv[5] : "13";
     char *      out     = (argc > 6) ? argv[6] : "apm.csv";
     int         run_ms  = (argc > 7) ? atoi(argv[7]) : 4000;
+    const char *ovh     = (argc > 8) ? argv[8] : NULL;   /* DTP -O overhead; NULL = APM default (4) */
 
     csp_conf.version = 2;
     csp_init();
@@ -86,8 +87,15 @@ int main(int argc, char **argv) {
     /* Give the ZMQ SUB connection + subscription time to establish before traffic. */
     usleep(500000);
 
-    char *start_argv[] = {"start", "-o", out, "-d", (char *)dport, "-w", "1000"};
-    rc = run_cmd(csp_monitor_start_cmd, 7, start_argv);
+    /* Default path: exactly the 7-arg start as before. With an overhead arg, append
+     * -O <ovh> so the monitor keys DTP fragments on the satDeploy (8) header size. */
+    char *start_argv[9] = {"start", "-o", out, "-d", (char *)dport, "-w", "1000"};
+    int start_argc = 7;
+    if (ovh != NULL) {
+        start_argv[start_argc++] = "-O";
+        start_argv[start_argc++] = (char *)ovh;
+    }
+    rc = run_cmd(csp_monitor_start_cmd, start_argc, start_argv);
     if (rc != SLASH_SUCCESS) {
         fprintf(stderr, "ci_monitor_host: csp_monitor start rc=%d\n", rc);
         return 1;

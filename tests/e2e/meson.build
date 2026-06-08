@@ -98,6 +98,16 @@ test('two-oracle agreement DTP (proxy drop-log vs live APM observed, port 8)',
   args: [zmqproxy_lossy, ci_gen_dtp, ci_monitor_host],
   timeout: 120)
 
+# satDeploy 8-byte DTP header (T5): the SAME loop with overhead=8 threaded through all
+# three actors (proxy -H 8, generator step=mtu-8, APM monitor -O 8). Proves the monitor
+# reads satDeploy's 8-byte frames end-to-end -- the hard prerequisite for measuring
+# satDeploy. Disjoint ports (6110/7110) so it runs concurrently with the 4-byte instance.
+test('two-oracle agreement DTP satDeploy 8-byte header (-O 8 / -H 8)',
+  find_program('two_oracle_dtp.sh'),
+  args: [zmqproxy_lossy, ci_gen_dtp, ci_monitor_host],
+  env: {'OVERHEAD': '8', 'FRONT_PORT': '6110', 'BACK_PORT': '7110'},
+  timeout: 120)
+
 # In-path drop shim (CAN/KISS injection, TODOS#2): drives ci_drop_iface's nexthop
 # directly with crafted RDP frames + a counting stub downstream -- no CAN hardware,
 # no vcan, no root (the real-vcan demo needs sudo and is documented separately). Asserts

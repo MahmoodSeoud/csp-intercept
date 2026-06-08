@@ -49,6 +49,7 @@ static char    mon_csv_path[256] = "csp-intercept.csv";
 static int     mon_match_dport = CI_DIPP_META_PORT;   /* default: port 13 RDP; -1 = any */
 static uint32_t mon_window_ms = 1000;
 static uint16_t mon_mtu = 200;
+static uint16_t mon_dtp_overhead = CI_DTP_OVERHEAD_DIPP;  /* 4=dipp (default), 8=satDeploy */
 static int     mon_buffer_low_water = 100;
 
 /* drainer-thread-only measurement state */
@@ -103,7 +104,11 @@ static void *mon_drainer(void *arg) {
                 } else if (pk->id.dport == CI_DTP_DATA_PORT) {
                     uint32_t off = 0, frag = 0;
                     if (ci_dtp_parse_offset(pk->data, pk->length, &off) == 0) {
-                        ci_dtp_fragment_index(off, mon_mtu, &frag);
+                        /* Overhead-aware: dipp (4) and satDeploy (8) share the offset
+                         * field but differ in useful-payload-per-fragment, so the
+                         * fragment index divisor (mtu - overhead) must match the
+                         * sender's libdtp variant or the two-oracle silently desyncs. */
+                        ci_dtp_fragment_index_ovh(off, mon_mtu, mon_dtp_overhead, &frag);
                     }
                     fprintf(mon_csv, "%u,%u,%u,%u,0x%02X,0,,,,%u,%u,,\n",
                             t, pk->id.src, pk->id.dst, pk->id.dport, pk->id.flags, off, frag);
@@ -142,10 +147,11 @@ static int csp_monitor_start_cmd(struct slash *slash) {
         return SLASH_SUCCESS;
     }
 
-    char *   out    = NULL;
-    int      dport  = mon_match_dport;
-    unsigned window = mon_window_ms;
-    unsigned mtu    = mon_mtu;
+    char *   out      = NULL;
+    int      dport    = mon_match_dport;
+    unsigned window   = mon_window_ms;
+    unsigned mtu      = mon_mtu;
+    unsigned overhead = mon_dtp_overhead;
 
     optparse_t *p = optparse_new("csp_monitor start", "");
     optparse_add_help(p);
@@ -153,6 +159,8 @@ static int csp_monitor_start_cmd(struct slash *slash) {
     optparse_add_int(p, 'd', "dport", "PORT", 10, &dport, "match dport (default 13; -1 = any)");
     optparse_add_unsigned(p, 'w', "window", "MS", 10, &window, "window length ms (default 1000)");
     optparse_add_unsigned(p, 'm', "mtu", "BYTES", 10, &mtu, "DTP session MTU (default 200)");
+    optparse_add_unsigned(p, 'O', "overhead", "BYTES", 10, &overhead,
+                          "DTP data-header overhead: 4=dipp (default), 8=satDeploy");
     int argi = optparse_parse(p, slash->argc - 1, (const char **)slash->argv + 1);
     if (argi < 0) {
         optparse_del(p);
@@ -160,13 +168,24 @@ static int csp_monitor_start_cmd(struct slash *slash) {
     }
     optparse_del(p);
 
+    /* CLI boundary: reject an overhead that would misindex SILENTLY. It must leave a
+     * positive useful payload (overhead < mtu, else mtu-overhead underflows and the
+     * lib returns -1 -> every fragment logs index 0) and must cover at least the
+     * 4-byte offset field. (Same fail-loud-at-the-boundary discipline as the proxy -M.) */
+    if (overhead < CI_DTP_OFFSET_SIZE || overhead >= mtu) {
+        printf("csp_monitor: invalid -O overhead %u (need %d <= overhead < mtu %u)\n",
+               overhead, CI_DTP_OFFSET_SIZE, mtu);
+        return SLASH_EINVAL;
+    }
+
     if (out) {
         strncpy(mon_csv_path, out, sizeof(mon_csv_path) - 1);
         mon_csv_path[sizeof(mon_csv_path) - 1] = '\0';
     }
-    mon_match_dport = dport;
-    mon_window_ms   = window;
-    mon_mtu         = (uint16_t)mtu;
+    mon_match_dport  = dport;
+    mon_window_ms    = window;
+    mon_mtu          = (uint16_t)mtu;
+    mon_dtp_overhead = (uint16_t)overhead;
 
     int rc = csp_promisc_enable(CSP_CONN_RXQUEUE_LEN);
     if (rc != CSP_ERR_NONE && rc != CSP_ERR_USED) {
@@ -197,12 +216,14 @@ static int csp_monitor_start_cmd(struct slash *slash) {
         printf("csp_monitor: failed to start drainer thread\n");
         return SLASH_ENOMEM;
     }
-    printf("csp_monitor: started -> %s (dport=%d, window=%ums, mtu=%u)\n",
-           mon_csv_path, mon_match_dport, mon_window_ms, mon_mtu);
+    printf("csp_monitor: started -> %s (dport=%d, window=%ums, mtu=%u, dtp_overhead=%u%s)\n",
+           mon_csv_path, mon_match_dport, mon_window_ms, mon_mtu, mon_dtp_overhead,
+           mon_dtp_overhead == CI_DTP_OVERHEAD_SATDEPLOY ? " satDeploy" :
+           mon_dtp_overhead == CI_DTP_OVERHEAD_DIPP ? " dipp" : "");
     return SLASH_SUCCESS;
 }
 slash_command_sub(csp_monitor, start, csp_monitor_start_cmd,
-                  "[-o FILE] [-d DPORT] [-w MS] [-m MTU]",
+                  "[-o FILE] [-d DPORT] [-w MS] [-m MTU] [-O OVERHEAD]",
                   "Start the promiscuous CSP link monitor");
 
 /* Drain + free every clone still sitting in the promisc queue, returning the count

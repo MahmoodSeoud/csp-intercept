@@ -71,6 +71,7 @@ int seed = 0;
 int match_dport = -1;       /* -M: gate drops to this dport (required for repro) */
 int match_rdp_syn = 0;      /* -R: only RDP SYN packets                          */
 int mtu_arg = 200;          /* -m: DTP session MTU (must match the client)       */
+int overhead_arg = CI_DTP_OVERHEAD_DIPP;  /* -H: DTP data-header overhead (4 dipp/8 satDeploy) */
 char * drop_log_name = NULL;/* -o: write the drop-decision vector here (oracle)  */
 
 static ci_drop_rule_t g_rule;
@@ -78,10 +79,11 @@ static uint16_t g_last_seq = 0;     /* RDP 16-bit seq wrap-epoch tracking */
 static int      g_have_last_seq = 0;
 static uint32_t g_epoch = 0;
 static uint16_t g_dtp_mtu = 200;
+static uint16_t g_dtp_overhead = CI_DTP_OVERHEAD_DIPP;   /* must match the APM monitor's -O */
 static FILE *   g_drop_log = NULL;
 static unsigned long long g_drops = 0, g_kept = 0, g_delay_drops = 0;
 
-char * shortopts = "hakgv:d:s:p:f:L:C:D:T:S:N:U:O:M:Rm:o:";
+char * shortopts = "hakgv:d:s:p:f:L:C:D:T:S:N:U:O:M:RH:m:o:";
 #else
 char * shortopts = "hgv:a:k:d:s:p:f:";
 #endif
@@ -402,6 +404,9 @@ int main(int argc, char ** argv) {
             case 'R':
             	match_rdp_syn = 1;
                 break;
+            case 'H':
+            	overhead_arg = atoi(optarg);
+                break;
             case 'm':
             	mtu_arg = atoi(optarg);
                 break;
@@ -430,6 +435,7 @@ int main(int argc, char ** argv) {
                 	   " -O PWRDWN \tTX power down time ms\n"
                 	   " -M DPORT \tMatch dport for DETERMINISTIC loss (e.g. 13 RDP / 8 DTP)\n"
                 	   " -R \tMatch only RDP SYN packets (use with -M)\n"
+                	   " -H OVERHEAD \tDTP data-header overhead: 4=dipp (default), 8=satDeploy (match the APM -O)\n"
                 	   " -m MTU \tDTP session MTU for fragment indexing (match the client; default 200)\n"
                 	   " -o FILE \tWrite the drop-decision vector (the reproducibility oracle) to FILE\n"
 #endif
@@ -610,10 +616,12 @@ static uint64_t proxy_flow_index(const csp_packet_t * packet, const ci_frame_t *
         }
         return 0;
     }
-    /* DTP bulk (port 8): leading uint32 LE byte-offset -> fragment index. */
+    /* DTP bulk (port 8): leading uint32 LE byte-offset -> fragment index. The header
+     * overhead (4 dipp / 8 satDeploy) must match the APM monitor's -O, or oracle A
+     * (this drop-log) and oracle B (the monitor) index the same fragment differently. */
     uint32_t off, frag = 0;
     if (ci_dtp_parse_offset(packet->data, packet->length, &off) == 0) {
-        ci_dtp_fragment_index(off, g_dtp_mtu, &frag);
+        ci_dtp_fragment_index_ovh(off, g_dtp_mtu, g_dtp_overhead, &frag);
     }
     return frag;
 }
@@ -631,6 +639,14 @@ void zmq_proxy_lossy() {
     g_rule.replay_vector    = NULL;
     g_rule.replay_len       = 0;
     g_dtp_mtu               = (uint16_t)mtu_arg;
+    /* Guard the same silent-misindex case the APM guards: overhead must cover the
+     * 4-byte offset field and leave a positive payload (overhead < mtu). */
+    if (overhead_arg < CI_DTP_OFFSET_SIZE || overhead_arg >= mtu_arg) {
+        printf("Invalid -H overhead %d (need %d <= overhead < mtu %d)\n",
+               overhead_arg, CI_DTP_OFFSET_SIZE, mtu_arg);
+        exit(-1);
+    }
+    g_dtp_overhead          = (uint16_t)overhead_arg;
 
     /* sigaction without SA_RESTART (NOT signal(), which sets SA_RESTART on glibc):
      * the handler only sets g_stop, so zmq_poll MUST be allowed to return EINTR for
@@ -653,8 +669,8 @@ void zmq_proxy_lossy() {
     }
 
     if (match_dport >= 0) {
-        printf("DETERMINISTIC loss: seed=%d dport=%d rdp_syn=%d p=%.4f mtu=%u%s\n",
-               seed, match_dport, match_rdp_syn, loss_prob, g_dtp_mtu,
+        printf("DETERMINISTIC loss: seed=%d dport=%d rdp_syn=%d p=%.4f mtu=%u overhead=%u%s\n",
+               seed, match_dport, match_rdp_syn, loss_prob, g_dtp_mtu, g_dtp_overhead,
                g_drop_log ? " [drop-log on]" : "");
     } else if (loss_prob > 0.0) {
         printf("WARNING: legacy rand() loss is NOT reproducible. Pass -M <dport> for the deterministic mode.\n");

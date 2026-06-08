@@ -16,35 +16,45 @@
 # Robust to ZMQ's slow-joiner (a few early frames lost before subscriptions settle):
 # the universe is the set of fragments the PROXY actually logged.
 #
-# Usage: two_oracle_dtp.sh <proxy> <ci_gen_dtp> <ci_monitor_host>
+# The DTP data-header overhead (OVERHEAD env: 4=dipp default, 8=satDeploy) is passed
+# identically to all three actors -- proxy (-H), generator, monitor (-O) -- so oracle A
+# and oracle B key the SAME byte offset to the SAME fragment index. A mismatch is exactly
+# the silent desync T5 guards against, so running this loop at OVERHEAD=8 is the live proof
+# that the monitor reads satDeploy's 8-byte frames.
+#
+# Usage: two_oracle_dtp.sh <proxy> <ci_gen_dtp> <ci_monitor_host>   (env: OVERHEAD, N, LOSS, ...)
 set -uo pipefail
 
 PROXY="$1"; GEN="$2"; MON="$3"
 N="${N:-500}"; LOSS="${LOSS:-0.3}"; SEED="${SEED:-1}"; DPORT=8; MTU="${MTU:-200}"
+OVERHEAD="${OVERHEAD:-4}"
 # Unique ports: meson runs E2E tests in parallel, so these must not collide with any
 # other test's proxy bind (two_oracle.sh 6090/7090, cli_guard 6040/7040, determinism
-# 6000-6010, forwarding 6020).
-FRONT_PORT=6100; BACK_PORT=7100
+# 6000-6010, forwarding 6020). Overridable so the 4-byte and 8-byte instances of THIS
+# loop run concurrently on disjoint ports (dipp 6100/7100, satDeploy 6110/7110).
+FRONT_PORT="${FRONT_PORT:-6100}"; BACK_PORT="${BACK_PORT:-7100}"
 front="tcp://127.0.0.1:${FRONT_PORT}"; back="tcp://127.0.0.1:${BACK_PORT}"
 
 TMP="$(mktemp -d)"
 drop="$TMP/drop.csv"; apm="$TMP/apm.csv"
 trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$TMP"' EXIT
 
-# 1) Proxy: match DTP dport 8, MTU for the fragment-index key, reproducible loss, log.
-"$PROXY" -s "$front" -p "$back" -M "$DPORT" -m "$MTU" -L "$LOSS" -S "$SEED" -o "$drop" >/dev/null 2>&1 &
+# 1) Proxy: match DTP dport 8, MTU + header overhead for the fragment-index key,
+#    reproducible loss, log. -H must match the monitor's -O and the generator's overhead.
+"$PROXY" -s "$front" -p "$back" -M "$DPORT" -m "$MTU" -H "$OVERHEAD" -L "$LOSS" -S "$SEED" -o "$drop" >/dev/null 2>&1 &
 proxypid=$!
 sleep 0.3
 
 # 2) Monitor node: join the proxy (pub=frontend, sub=backend), run the real APM on
-#    dport 8 for the whole transfer. args: host frontport backport addr dport out run_ms.
-#    The APM's DTP fragment index uses its default MTU (200), matching -m above.
-"$MON" 127.0.0.1 "$FRONT_PORT" "$BACK_PORT" 19 "$DPORT" "$apm" 4000 >"$TMP/mon.log" 2>&1 &
+#    dport 8 for the whole transfer. args: host frontport backport addr dport out run_ms overhead.
+#    The APM's DTP fragment index uses its default MTU (200), matching -m above, and -O OVERHEAD.
+"$MON" 127.0.0.1 "$FRONT_PORT" "$BACK_PORT" 19 "$DPORT" "$apm" 4000 "$OVERHEAD" >"$TMP/mon.log" 2>&1 &
 monpid=$!
 sleep 0.7                         # let the monitor's SUB + APM start before traffic
 
-# 3) Publisher: deterministic DTP stream of N fragments through the proxy frontend.
-"$GEN" "$N" "$front" "$MTU"
+# 3) Publisher: deterministic DTP stream of N fragments through the proxy frontend, with
+#    the matching header overhead (step = mtu - overhead) so fragment i lands at index i.
+"$GEN" "$N" "$front" "$MTU" "$OVERHEAD"
 sleep 0.5                         # let the last frames route + drain into the APM CSV
 
 # 4) Tear down: the monitor stops itself after run_ms; INT the proxy to flush drop-log.

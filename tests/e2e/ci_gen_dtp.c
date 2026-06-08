@@ -10,8 +10,13 @@
  * (not wire arrival order), the same input yields a byte-identical drop decision
  * across runs with the same seed.
  *
- * Usage: ci_gen_dtp <count> <connect-addr> <mtu>
- *   defaults: 500  tcp://localhost:6000  200   (port is always 8, the DTP data port)
+ * Usage: ci_gen_dtp <count> <connect-addr> <mtu> [overhead]
+ *   defaults: 500  tcp://localhost:6000  200  4   (port is always 8, the DTP data port)
+ *
+ * `overhead` is the libdtp data-header size: 4 (dipp, default) or 8 (satDeploy). The
+ * leading uint32 byte-offset is identical in both; only the per-fragment payload span
+ * (mtu - overhead) -- and thus offset i*(mtu-overhead) -> fragment index i -- differs.
+ * Pass 8 (with the proxy -H 8 and the APM -O 8) to exercise the satDeploy parse path.
  */
 #include <stdint.h>
 #include <string.h>
@@ -26,14 +31,15 @@
 extern csp_conf_t csp_conf;
 
 int main(int argc, char ** argv) {
-    int          count = (argc > 1) ? atoi(argv[1]) : 500;
-    const char * addr  = (argc > 2) ? argv[2] : "tcp://localhost:6000";
-    int          mtu   = (argc > 3) ? atoi(argv[3]) : 200;
+    int          count    = (argc > 1) ? atoi(argv[1]) : 500;
+    const char * addr     = (argc > 2) ? argv[2] : "tcp://localhost:6000";
+    int          mtu      = (argc > 3) ? atoi(argv[3]) : 200;
+    int          overhead = (argc > 4) ? atoi(argv[4]) : CI_DTP_OVERHEAD_DIPP;
 
-    if (mtu <= 4) {
-        return 2;   /* (mtu-4) must be positive: it is the per-fragment payload span */
+    if (overhead < CI_DTP_OFFSET_SIZE || mtu <= overhead) {
+        return 2;   /* (mtu-overhead) must be positive: it is the per-fragment payload span */
     }
-    const uint32_t step = (uint32_t)(mtu - 4);   /* byte offset increment per fragment */
+    const uint32_t step = (uint32_t)(mtu - overhead);   /* byte offset increment per fragment */
 
     csp_conf.version = 2;
 
