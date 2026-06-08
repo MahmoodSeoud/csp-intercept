@@ -25,8 +25,12 @@ int ci_drop_iface_nexthop(csp_iface_t *iface, uint16_t via,
         return s->target->nexthop(s->target, via, packet, from_me);
     }
 
+    /* The per-flow index is always computed: it keys the decision in the default
+     * identity mode, and in per-attempt GE mode it is logged as "which fragment the
+     * channel happened to drop" (informational; the decision is the GE chain). */
     uint64_t idx  = ci_flow_index(&s->tracker, &f, packet->data, packet->length);
-    int      drop = ci_rule_decide(&s->rule, idx);
+    int      drop = s->per_attempt ? ci_ge_state_step(&s->ge)
+                                   : ci_rule_decide(&s->rule, idx);
 
     if (s->drop_log) {
         /* Schema identical to the proxy drop-log: t_ms,src,dport,csp_flags,is_rdp,
@@ -66,4 +70,14 @@ int ci_drop_iface_init(ci_drop_iface_t *s, const char *name, csp_iface_t *target
     s->iface.nexthop     = ci_drop_iface_nexthop;
     s->iface.driver_data = s;
     return 0;
+}
+
+void ci_drop_iface_enable_ge(ci_drop_iface_t *s, double p_g2b, double p_b2g) {
+    if (s == NULL) {
+        return;
+    }
+    /* Seed the chain from the rule's seed so the same seed replays the same channel
+     * across both measured arms (upload vs satDeploy). */
+    ci_ge_state_init(&s->ge, s->rule.seed, p_g2b, p_b2g);
+    s->per_attempt = 1;
 }

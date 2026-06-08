@@ -37,6 +37,7 @@
 #include "ci_rule.h"
 #include "ci_rdp.h"
 #include "ci_dtp.h"
+#include "ci_ge.h"
 
 #define CI_CSP_FRDP 0x02
 #define CI_RDP_ACK  0x04
@@ -202,8 +203,66 @@ int main(void) {
         CHECK(csp_buffer_remaining() == before, "passthrough: pool leak");
     }
 
+    /* ---- per-attempt GE mode (T7): recovery is possible, vs the false-null ---- *
+     * Re-send the SAME RDP seq many times and watch what each mode does to it. This is
+     * the exact failure the measurement plan guards against: identity-keyed loss makes a
+     * recoverable transfer look unrecoverable (a silent false-null).                    */
+    {
+        const int R = 100;   /* attempts at the SAME fragment */
+
+        /* (A) Default identity mode, p=1.0: that fragment is dropped on EVERY attempt.
+         * Re-sending it 100 times never gets it through -- a real loss-recovering
+         * uploader would stall here forever and look no better than a naive one. */
+        ci_drop_rule_t irule = {0};
+        irule.seed = 1; irule.match_dport = RDP_PORT; irule.drop_probability = 1.0;
+        ci_drop_iface_t ishim;
+        ci_drop_iface_init(&ishim, "drop", &stub_iface, &irule, MTU, NULL);
+        memset(stub_seen, 0, sizeof(stub_seen));
+        stub_count = 0;
+        int before = csp_buffer_remaining();
+        for (int i = 0; i < R; i++) send_rdp(&ishim, 0);   /* same seq every time */
+        CHECK(stub_count == 0,
+              "identity p=1.0: seq 0 delivered %d/%d times (a dropped index must never recover)",
+              stub_count, R);
+        CHECK(ishim.injected_drops == (uint64_t)R,
+              "identity p=1.0: expected %d drops, got %llu", R,
+              (unsigned long long)ishim.injected_drops);
+        CHECK(csp_buffer_remaining() == before, "identity-mode repeat: pool leak");
+
+        /* (B) Per-attempt GE mode, same seed: each attempt draws fresh, so re-sending
+         * the same fragment gets it through on a good-state attempt -- recovery is
+         * measurable. The two-oracle partition still holds per attempt (dropped XOR
+         * delegated), and the loss is non-trivial (not vacuously zero). */
+        ci_drop_rule_t grule = {0};
+        grule.seed = 1; grule.match_dport = RDP_PORT;   /* drop_probability unused in GE mode */
+        ci_drop_iface_t gshim;
+        ci_drop_iface_init(&gshim, "drop", &stub_iface, &grule, MTU, NULL);
+        double pg, pb;
+        ci_ge_params(0.30, 4.0, &pg, &pb);              /* 30% loss, bursts of ~4 */
+        ci_drop_iface_enable_ge(&gshim, pg, pb);
+        memset(stub_seen, 0, sizeof(stub_seen));
+        stub_count = 0;
+        before = csp_buffer_remaining();
+        for (int i = 0; i < R; i++) send_rdp(&gshim, 0);   /* same seq every time */
+        int      delivered = stub_count;
+        uint64_t dropped   = gshim.injected_drops;
+        CHECK((int)dropped + delivered == R,
+              "GE partition: dropped %llu + delivered %d != %d attempts",
+              (unsigned long long)dropped, delivered, R);
+        CHECK(delivered > 0,
+              "GE recovery: seq 0 never delivered over %d attempts (recovery impossible)", R);
+        CHECK(dropped > 0,
+              "GE: seq 0 never dropped over %d attempts (loss vacuous at target 0.30)", R);
+        CHECK(stub_seen[0] == 1, "GE recovery: stub never saw seq 0");
+        CHECK(csp_buffer_remaining() == before, "GE-mode repeat: pool leak");
+        printf("  T7 per-attempt GE: seq 0 x%d attempts -> %d delivered, %llu dropped "
+               "(identity mode: 0 delivered -> false-null)\n",
+               R, delivered, (unsigned long long)dropped);
+    }
+
     if (fails == 0) {
-        printf("drop_iface_host: PASS (deterministic in-path drop, leak-free, partitions input)\n");
+        printf("drop_iface_host: PASS (deterministic in-path drop, leak-free, partitions input; "
+               "per-attempt GE recovers)\n");
         return 0;
     }
     printf("drop_iface_host: FAIL (%d checks)\n", fails);

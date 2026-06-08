@@ -110,6 +110,98 @@ int main(void) {
         assert(fabs(mean - 0.10) < 0.01);   /* ~0.118 (FAIL) without the seed mix */
     }
 
+    /* 8) PER-ATTEMPT GE state machine (T7) -- the recovery-measurement sibling.
+     *    (a) Equivalence: advancing the chain along the TRANSMISSION axis must be
+     *    byte-identical to ci_ge_fill along the INDEX axis for the same seed. This is
+     *    the property the fair both-arms loss source relies on (same seed => same
+     *    channel replayed), and it ties T7 to the already-validated T3 generator. */
+    {
+        ci_ge_params(0.10, 5.0, &p, &r);
+        const size_t Ns = 100000;
+        ci_ge_state_t st;
+        ci_ge_state_init(&st, 0xABCDEFu, p, r);
+        ci_ge_fill(0xABCDEFu, p, r, v, Ns);
+        size_t mism = 0;
+        for (size_t i = 0; i < Ns; i++) {
+            if ((uint8_t)ci_ge_state_step(&st) != v[i]) {
+                mism++;
+            }
+        }
+        assert(mism == 0);     /* step-axis trajectory == index-axis vector, byte for byte */
+    }
+
+    /* (b) marginal loss over a long per-attempt run tracks the target */
+    {
+        ci_ge_params(0.20, 5.0, &p, &r);
+        ci_ge_state_t st;
+        ci_ge_state_init(&st, 7u, p, r);
+        const size_t Ns = 2000000;
+        size_t drops = 0;
+        for (size_t i = 0; i < Ns; i++) {
+            drops += (size_t)ci_ge_state_step(&st);
+        }
+        double L = (double)drops / (double)Ns;
+        printf("  per-attempt marginal loss target=0.20 measured=%.4f\n", L);
+        assert(fabs(L - 0.20) < 0.01);
+    }
+
+    /* (c) determinism: same seed -> identical step sequence; different seed differs */
+    {
+        ci_ge_params(0.20, 5.0, &p, &r);
+        ci_ge_state_t s1, s2;
+        ci_ge_state_init(&s1, 42u, p, r);
+        ci_ge_state_init(&s2, 42u, p, r);
+        int differ = 0;
+        for (int i = 0; i < 10000; i++) {
+            if (ci_ge_state_step(&s1) != ci_ge_state_step(&s2)) { differ = 1; }
+        }
+        assert(!differ);
+        ci_ge_state_init(&s1, 42u, p, r);
+        ci_ge_state_init(&s2, 43u, p, r);
+        int same = 1;
+        for (int i = 0; i < 10000; i++) {
+            if (ci_ge_state_step(&s1) != ci_ge_state_step(&s2)) { same = 0; }
+        }
+        assert(!same);
+    }
+
+    /* (d) RECOVERY is the whole point of T7: unlike a vector keyed to a fixed index (a
+     *     re-sent fragment is dropped on EVERY attempt), the per-attempt chain at a loss
+     *     in (0,1) yields BOTH drops and keeps over repeated attempts -- so a dropped
+     *     fragment can get through on a later try. p>=1 models a permanently-bad link
+     *     (keeps once from the GOOD start, then drops forever); p<=0 never drops. */
+    {
+        ci_ge_params(0.30, 5.0, &p, &r);
+        ci_ge_state_t st;
+        ci_ge_state_init(&st, 5u, p, r);
+        size_t drops = 0, keeps = 0;
+        for (int i = 0; i < 1000; i++) {
+            if (ci_ge_state_step(&st)) { drops++; } else { keeps++; }
+        }
+        assert(drops > 0 && keeps > 0);     /* recovery possible: not stuck dropping */
+
+        ci_ge_params(0.0, 5.0, &p, &r);
+        ci_ge_state_init(&st, 5u, p, r);
+        size_t d0 = 0;
+        for (int i = 0; i < 1000; i++) {
+            d0 += (size_t)ci_ge_state_step(&st);
+        }
+        assert(d0 == 0);                    /* p=0 -> never drop */
+
+        ci_ge_params(1.0, 5.0, &p, &r);     /* loss>=1 -> p_g2b=1, p_b2g=0 */
+        ci_ge_state_init(&st, 5u, p, r);
+        int first = ci_ge_state_step(&st);
+        size_t rest = 0;
+        for (int i = 0; i < 1000; i++) {
+            rest += (size_t)ci_ge_state_step(&st);
+        }
+        assert(first == 0 && rest == 1000); /* GOOD once, then BAD forever (no recovery) */
+    }
+
+    /* (e) NULL safety */
+    assert(ci_ge_state_step(NULL) == 0);
+    ci_ge_state_init(NULL, 1, 0.1, 0.2);    /* must not crash */
+
     free(v);
     free(v2);
     printf("ge_host: PASS\n");

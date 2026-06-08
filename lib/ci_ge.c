@@ -70,3 +70,39 @@ void ci_ge_fill(uint64_t seed, double p_g2b, double p_b2g, uint8_t *vec, size_t 
         }
     }
 }
+
+void ci_ge_state_init(ci_ge_state_t *st, uint64_t seed, double p_g2b, double p_b2g) {
+    if (st == NULL) {
+        return;
+    }
+    /* Mix the seed exactly as ci_ge_fill does, for the same small-seed-independence
+     * reason AND so the step-axis trajectory is byte-identical to ci_ge_fill(seed,...)
+     * read along index -- the equivalence the recovery loss source relies on. */
+    st->seed  = ci_splitmix64(seed);
+    st->step  = 0;
+    st->t_g2b = ci_ge_threshold(p_g2b);
+    st->t_b2g = ci_ge_threshold(p_b2g);
+    st->bad   = 0;                        /* chain starts in GOOD */
+}
+
+int ci_ge_state_step(ci_ge_state_t *st) {
+    if (st == NULL) {
+        return 0;
+    }
+    /* Same chain body as ci_ge_fill's loop, advanced one transmission per call: emit
+     * the current state, then transition with one draw keyed on the step counter. The
+     * draw is keyed on `step` (not on any fragment identity), so a re-sent fragment
+     * draws fresh on its next attempt -> recovery is possible. */
+    int drop = st->bad ? 1 : 0;           /* GOOD lossless, BAD drops */
+    uint64_t d = ci_draw(st->seed, st->step++);
+    if (!st->bad) {
+        if (d < st->t_g2b) {
+            st->bad = 1;
+        }
+    } else {
+        if (d < st->t_b2g) {
+            st->bad = 0;
+        }
+    }
+    return drop;
+}

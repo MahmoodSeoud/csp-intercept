@@ -8,8 +8,16 @@
  * for the monitor node to observe (oracle B). This is the CAN analogue of ci_gen, with
  * the loss injected in-path instead of by a broker.
  *
- * Usage: ci_inject_can <device> <node_addr> <dst> <dport> <count> <mtu> <loss> <seed> <drop.csv>
+ * Usage: ci_inject_can <device> <node_addr> <dst> <dport> <count> <mtu> <loss> <seed> <drop.csv> [mean_burst]
  *   e.g. ci_inject_can vcan0 10 20 13 500 200 0.3 1 /tmp/can_drop.csv
+ *        ci_inject_can vcan0 10 20 13 500 200 0.3 1 /tmp/can_drop.csv 5   # GE burst loss
+ *
+ * The optional trailing `mean_burst` (>0) switches the shim from i.i.d. per-index loss
+ * to Gilbert-Elliott burst loss (T7): `loss` is then the marginal rate and `mean_burst`
+ * the mean drop-run length. NOTE this generator sends each fragment ONCE, so GE here only
+ * changes the loss DISTRIBUTION (bursty vs uniform) for the two-oracle bench; the
+ * per-attempt RECOVERY property of the GE shim is exercised by the upstream unit test
+ * (drop_iface_host) and by the real retransmitting uploaders in the sweep, not here.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -26,6 +34,7 @@
 #include "ci_drop_iface.h"
 #include "ci_rule.h"
 #include "ci_dtp.h"
+#include "ci_ge.h"
 
 #define CI_CSP_FRDP 0x02
 #define CI_RDP_ACK  0x04
@@ -42,6 +51,7 @@ int main(int argc, char **argv) {
     double      loss  = (argc > 7) ? atof(argv[7]) : 0.3;
     uint64_t    seed  = (argc > 8) ? strtoull(argv[8], NULL, 10) : 1;
     const char *log   = (argc > 9) ? argv[9] : NULL;
+    double      burst = (argc > 10) ? atof(argv[10]) : 0.0;   /* >0 => GE burst loss */
 
     csp_conf.version = 2;
     csp_init();
@@ -70,6 +80,14 @@ int main(int argc, char **argv) {
 
     ci_drop_iface_t shim;
     ci_drop_iface_init(&shim, "CANDROP", can_iface, &rule, (uint16_t)mtu, drop_log);
+
+    /* GE burst loss (T7): marginal rate = loss, mean drop-run = burst. Seeded from the
+     * same `seed`, so a sweep replays the identical channel across both measured arms. */
+    if (burst > 0.0) {
+        double p_g2b, p_b2g;
+        ci_ge_params(loss, burst, &p_g2b, &p_b2g);
+        ci_drop_iface_enable_ge(&shim, p_g2b, p_b2g);
+    }
 
     usleep(300000);   /* let the CAN socket settle before TX */
 
@@ -109,8 +127,10 @@ int main(int argc, char **argv) {
 
     usleep(300000);
     if (drop_log) { fflush(drop_log); fclose(drop_log); }
-    printf("ci_inject_can: sent %d on %s (dport %d), injected_drops=%llu forwarded=%llu\n",
-           count, dev, dport, (unsigned long long)shim.injected_drops,
+    printf("ci_inject_can: sent %d on %s (dport %d, %s), injected_drops=%llu forwarded=%llu\n",
+           count, dev, dport,
+           burst > 0.0 ? "GE burst loss" : "i.i.d. per-index loss",
+           (unsigned long long)shim.injected_drops,
            (unsigned long long)shim.forwarded);
     return 0;
 }

@@ -17,14 +17,28 @@
  * Reproducibility: identical seed + identical per-flow identities => identical drop
  * set as the proxy, so the proxy drop-log and this shim are interchangeable oracle A.
  *
- * IMPORTANT -- deterministic-by-identity, not per-attempt. The drop decision is a pure
- * function of (seed, per-flow index): the SAME RDP seq (same wrap epoch) or DTP fragment
- * offset is dropped on EVERY transmission. With the one-shot test generators (each index
- * emitted once) this is exactly what makes the two oracles agree. But pointed in-path at
- * a REAL reliable transfer, a dropped index is re-dropped on every retransmit, so that
- * packet never gets through and the transfer stalls forever. To model loss a protocol can
- * recover from (the realistic RDP/DTP-under-loss case), use a per-attempt loss source
- * (e.g. the agent-side trace-driven loss_filter), not this identity-keyed shim.
+ * TWO DROP MODES.
+ *
+ * (1) Default -- deterministic-by-identity (the validated two-oracle / monitor path).
+ * The drop decision is a pure function of (seed, per-flow index): the SAME RDP seq
+ * (same wrap epoch) or DTP fragment offset is dropped on EVERY transmission. With the
+ * one-shot test generators (each index emitted once) this is exactly what makes the two
+ * oracles agree. But pointed in-path at a REAL reliable transfer, a dropped index is
+ * re-dropped on every retransmit, so that packet never gets through and the transfer
+ * stalls -- and a loss-recovering uploader (satDeploy) looks no better than a naive one,
+ * a silent false-null. So this mode is for VALIDATING the monitor, not for measuring
+ * recovery.
+ *
+ * (2) Opt-in -- per-attempt Gilbert-Elliott (T7), via ci_drop_iface_enable_ge(). The
+ * decision comes from a stateful GE chain advanced once per in-scope transmission
+ * (lib/ci_ge ci_ge_state_t), NOT from the fragment identity. A re-sent fragment draws
+ * fresh, so a fragment dropped on one attempt can succeed on the next -- recovery is
+ * measurable. This is the loss source for the upload-vs-satDeploy sweep. Applied on the
+ * ground TX (pre-bus), so the monitor still measures delivered loss and the two-oracle
+ * partition still holds (every in-scope TX is dropped XOR forwarded); the per-flow index
+ * is still computed and logged, now as informational "which fragment did the channel
+ * drop" rather than as the decision key. See mseo-master-plan-measurement-20260607.md
+ * (CORRECTION 2026-06-08, point 3).
  *
  * Single-flow scope: one tracker per shim, mutated unsynchronised in the nexthop. The
  * rule's match scope MUST select exactly one RDP flow -- multiple in-scope RDP
@@ -40,6 +54,7 @@
 #include <csp/csp_interface.h>
 
 #include "ci_rule.h"
+#include "ci_ge.h"
 
 typedef struct {
     csp_iface_t        iface;     /* the shim interface registered with csp        */
@@ -47,6 +62,8 @@ typedef struct {
     ci_drop_rule_t     rule;      /* match scope + seed/probability (or replay)     */
     ci_flow_tracker_t  tracker;   /* per-flow identity (RDP wrap epoch / DTP mtu)   */
     FILE *             drop_log;  /* optional oracle CSV (NULL = no log)            */
+    int                per_attempt;  /* 0 = identity-keyed (default); 1 = GE chain  */
+    ci_ge_state_t      ge;        /* per-attempt GE state (valid iff per_attempt)   */
     uint64_t           injected_drops;  /* our own counter (NOT iface->drop/tx_err) */
     uint64_t           forwarded;       /* in-scope frames delegated downstream     */
     uint64_t           passthrough;     /* out-of-scope frames delegated untouched  */
@@ -57,10 +74,22 @@ typedef struct {
  * `name` is the shim's csp iface name (<= CSP_IFLIST_NAME_MAX). `rule` is copied.
  * `dtp_mtu` seeds the flow tracker (match the proxy / client). `drop_log` may be NULL.
  * Does NOT register the shim with csp_iflist; the caller routes to &s->iface as needed.
+ * Starts in the default identity-keyed mode; call ci_drop_iface_enable_ge() to switch.
  * Returns 0 on success, -1 on bad args.
  */
 int ci_drop_iface_init(ci_drop_iface_t *s, const char *name, csp_iface_t *target,
                        const ci_drop_rule_t *rule, uint16_t dtp_mtu, FILE *drop_log);
+
+/*
+ * Switch the shim into per-attempt Gilbert-Elliott mode (T7). The drop decision is then
+ * the GE chain (advanced once per in-scope TX) instead of ci_rule_decide on the per-flow
+ * index, so a re-sent fragment can succeed on a later attempt (recovery measurable).
+ * Transitions (p_g2b, p_b2g) come from ci_ge_params(target_loss, mean_burst, ...); the
+ * chain is seeded from the rule's seed, so the same seed replays the same channel across
+ * the upload and satDeploy arms. Must be called after ci_drop_iface_init. No-op if s is
+ * NULL.
+ */
+void ci_drop_iface_enable_ge(ci_drop_iface_t *s, double p_g2b, double p_b2g);
 
 /* The nexthop installed on s->iface. Exposed for direct unit testing. */
 int ci_drop_iface_nexthop(csp_iface_t *iface, uint16_t via,

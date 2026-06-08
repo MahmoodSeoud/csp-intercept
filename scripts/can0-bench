@@ -19,6 +19,7 @@
 #   scripts/can0-bench              # RDP (dport 13), default
 #   scripts/can0-bench dtp          # DTP bulk (port 8)
 #   scripts/can0-bench rdp 0.5 7    # protocol, loss prob, seed
+#   scripts/can0-bench rdp 0.3 1 5  # + mean burst length -> Gilbert-Elliott burst loss (T7)
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
@@ -28,10 +29,11 @@ REPO="$PWD"
 PROTO="${1:-rdp}"
 LOSS="${2:-0.3}"
 SEED="${3:-1}"
+BURST="${4:-0}"     # 0 = i.i.d. per-index loss (default); >0 = GE burst, mean run = BURST
 case "$PROTO" in
   rdp) DPORT=13 ;;
   dtp) DPORT=8  ;;
-  *) echo "usage: can0-bench [rdp|dtp] [loss] [seed]"; exit 1 ;;
+  *) echo "usage: can0-bench [rdp|dtp] [loss] [seed] [mean_burst]"; exit 1 ;;
 esac
 
 DEV=can0
@@ -57,7 +59,12 @@ DROP="$REPO/captures/can0_drop.csv"; APM="$REPO/captures/can0_apm.csv"
 INIT="$WORK/can0_run.csh"
 SESSION="$WORK/can0_session.log"; INJECTLOG="$WORK/can0_inject.log"
 
-echo "== can0-bench: $PROTO (dport $DPORT), loss=$LOSS seed=$SEED, src=$SRC dst=$DST =="
+if [ "$BURST" != "0" ]; then
+  LOSSDESC="loss=$LOSS (GE burst, mean run=$BURST)"
+else
+  LOSSDESC="loss=$LOSS (i.i.d.)"
+fi
+echo "== can0-bench: $PROTO (dport $DPORT), $LOSSDESC seed=$SEED, src=$SRC dst=$DST =="
 
 # --- 0) sanity: csh + a quiet check we won't collide ---
 [ -x "$CSH" ] || { echo "FAIL: csh not found at $CSH (set CSH=/path/to/csh)"; exit 1; }
@@ -108,7 +115,7 @@ sleep 3   # let csh init + add can + apm load + monitor start
 
 # --- 3) inject our deterministic stream through the drop shim (oracle A) ---
 echo "-- injecting $N $PROTO frames through the drop shim --"
-"$INJECT" "$DEV" "$SRC" "$DST" "$DPORT" "$N" "$MTU" "$LOSS" "$SEED" "$DROP" >"$INJECTLOG" 2>&1
+"$INJECT" "$DEV" "$SRC" "$DST" "$DPORT" "$N" "$MTU" "$LOSS" "$SEED" "$DROP" "$BURST" >"$INJECTLOG" 2>&1
 sleep 2
 wait "$MON" 2>/dev/null || true
 
