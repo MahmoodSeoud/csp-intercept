@@ -36,7 +36,7 @@ ci_strict = ['c_std=c11', 'warning_level=2', 'werror=true']
 # the parse/rule/measurement layer, so it is trivially unit-testable.
 ci_inc = include_directories('lib')
 ci_lib = static_library('ci',
-  ['lib/ci_rdp.c', 'lib/ci_dtp.c', 'lib/ci_rule.c', 'lib/ci_meas.c'],
+  ['lib/ci_rdp.c', 'lib/ci_dtp.c', 'lib/ci_rule.c', 'lib/ci_meas.c', 'lib/ci_ge.c'],
   include_directories: ci_inc,
   override_options: ci_strict,
   install: false)
@@ -48,6 +48,20 @@ test_lib = executable('test_lib', 'tests/test_lib.c',
   dependencies: ci_dep,
   override_options: ci_strict)
 test('lib unit tests', test_lib)
+
+# Gilbert-Elliott burst-loss generator (T3): marginal loss + mean burst length
+# track the target, deterministic per seed, and the generated vector drives the
+# rule's replay path. Pure lib, no frontends needed.
+ge_cc = meson.get_compiler('c')
+ge_m = ge_cc.find_library('m', required: false)
+ge_deps = [ci_dep]
+if ge_m.found()
+  ge_deps += ge_m
+endif
+ge_host = executable('ge_host', 'tests/ge_host.c',
+  dependencies: ge_deps,
+  override_options: ci_strict)
+test('gilbert-elliott burst-loss generator', ge_host)
 
 # Front-ends: the vendored lossy proxy and the monitor APM. Gated behind the
 # `frontends` option so the pure lib above stays buildable with zero dependencies.
