@@ -58,7 +58,7 @@ def detect_blackouts(epochs_s, gap_factor, min_floor_s=2.0):
     deltas = [b - a for a, b in zip(epochs_s, epochs_s[1:]) if b > a]
     if not deltas:
         return (None, [])
-    med = sorted(deltas)[len(deltas) // 2]
+    med = percentile(deltas, 50)   # interpolated, consistent with the aggregate percentiles
     thresh = max(gap_factor * med, min_floor_s)
     return (med, [d for d in deltas if d > thresh])
 

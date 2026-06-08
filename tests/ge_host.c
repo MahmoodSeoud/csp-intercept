@@ -93,6 +93,23 @@ int main(void) {
     }
     assert(ci_rule_decide(&rule, 5000) == 0);   /* out of range -> keep */
 
+    /* 7) regression: small sweep seeds (0..15) must NOT bias the loss at a real
+     *    transfer length. Before the seed mix, seed^index collisions pushed this
+     *    ~+18% high (0.118 vs 0.10 at N=2000); the mix restores it to ~0.105.
+     *    Deterministic (fixed seeds + fixed PRNG), so this threshold is stable. */
+    {
+        const size_t Nreg = 2000;
+        ci_ge_params(0.10, 5.0, &p, &r);
+        double sum = 0.0;
+        for (uint64_t sd = 0; sd < 16; sd++) {
+            ci_ge_fill(sd, p, r, v, Nreg);
+            sum += marginal_loss(v, Nreg);
+        }
+        double mean = sum / 16.0;
+        printf("  small-seed(0..15) mean loss @N=2000 target=0.10 = %.4f\n", mean);
+        assert(fabs(mean - 0.10) < 0.01);   /* ~0.118 (FAIL) without the seed mix */
+    }
+
     free(v);
     free(v2);
     printf("ge_host: PASS\n");

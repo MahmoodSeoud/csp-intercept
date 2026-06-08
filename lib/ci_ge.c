@@ -46,12 +46,19 @@ void ci_ge_fill(uint64_t seed, double p_g2b, double p_b2g, uint8_t *vec, size_t 
     if (vec == NULL || n == 0) {
         return;
     }
+    /* Mix the seed once. ci_draw keys on splitmix64(seed ^ index); small user-facing
+     * sweep seeds (0,1,2,...) would otherwise share ~94% of their draws (the seed^i
+     * ranges overlap), so they are NOT independent replicates and the realized burst
+     * loss is biased at real transfer lengths (worst ~+18% at N~2000, target 0.10).
+     * Mixing maps small seeds to well-separated 64-bit values -> independent seeds,
+     * unbiased loss. Determinism + the replay path are unaffected (mix is pure). */
+    const uint64_t s = ci_splitmix64(seed);
     const uint64_t t_g2b = ci_ge_threshold(p_g2b);
     const uint64_t t_b2g = ci_ge_threshold(p_b2g);
     int bad = 0;                          /* chain starts in GOOD */
     for (size_t i = 0; i < n; i++) {
         vec[i] = bad ? 1u : 0u;           /* GOOD lossless, BAD drops */
-        uint64_t d = ci_draw(seed, i);    /* one independent draw per index */
+        uint64_t d = ci_draw(s, i);       /* one independent draw per (mixed seed, idx) */
         if (!bad) {
             if (d < t_g2b) {
                 bad = 1;

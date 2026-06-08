@@ -39,8 +39,11 @@ import sys
 # `prometheus add <metric>{<labels>} <value> <epoch_ms>`. Anchored on a >=10-digit
 # epoch at end-of-line so the value token (which may itself be many digits, e.g.
 # rx_freq) can never be mistaken for the timestamp.
+# Epoch pinned to exactly 13 digits = milliseconds (e.g. 1780401727073). A looser
+# \d{10,} would accept a 10-digit seconds or 16-digit microsecond stamp, which the
+# downstream regime annotation divides by 1000 assuming ms -> silently 1000x off.
 LINE_RE = re.compile(
-    r'prometheus add ([A-Za-z_][A-Za-z0-9_]*)\{([^}]*)\}\s+(\S+)\s+(\d{10,})\s*$'
+    r'prometheus add ([A-Za-z_][A-Za-z0-9_]*)\{([^}]*)\}\s+(\S+)\s+(\d{13})\s*$'
 )
 NODE_RE = re.compile(r'node="?(\d+)"?')
 ANSI_RE = re.compile(r'\x1b\[[0-9;?]*[A-Za-z]')

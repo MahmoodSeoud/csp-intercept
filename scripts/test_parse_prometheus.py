@@ -59,6 +59,12 @@ def test_malformed_missing_epoch_skipped():
     assert P.parse_line('prometheus add rx_count{node="4032"} 40') is None
 
 
+def test_non_ms_epoch_rejected():
+    # 10-digit (seconds) epoch is not ms; accepting it would make the regime
+    # annotation's span/throughput 1000x off. Must be skipped, not parsed.
+    assert P.parse_line('prometheus add rx_count{node="4032"} 40 1780401727') is None
+
+
 def test_no_node_label():
     r = P.parse_line('prometheus add stdbuf_out{} 3 1780401727073')
     assert r is not None and r["node"] == ""
