@@ -68,6 +68,12 @@
 #include <csp/arch/csp_time.h>
 #include <csp/drivers/can_socketcan.h>
 #include <csp/interfaces/csp_if_zmqhub.h>
+/* libcsp-private (csp_dep exports src/ as an include dir): the split-horizon pump
+ * below replaces csp_bridge_work(), so it reads the qfifo and sends to a chosen
+ * iface directly. */
+#include "csp_qfifo.h"
+#include "csp_io.h"
+#include "csp_dedup.h"
 
 #include "ci_drop_iface.h"
 #include "ci_rule.h"
@@ -122,11 +128,20 @@ static int open_iface_spec(const char *spec, const char *name, csp_iface_t **out
     return -1;
 }
 
+/* Split-horizon counters (see pump below). */
+static unsigned long long g_echo_in = 0;   /* ingress-side echoes dropped (broker reflection) */
+static unsigned long long g_echo_out = 0;  /* egress-side echoes dropped (own TX seen on egress RX) */
+
 int main(int argc, char **argv) {
     if (argc < 10) {
         fprintf(stderr,
-            "usage: %s <in> <out> <dport> <mtu> <overhead> <loss> <burst> <seed> <drop.csv|->\n"
-            "  <in>/<out> = zmq:PUB_EP,SUB_EP | can:DEVICE   (burst>0 => per-attempt GE)\n",
+            "usage: %s <in> <out> <dport> <mtu> <overhead> <loss> <burst> <seed> <drop.csv|-> [src_addr] [pace_us]\n"
+            "  <in>/<out> = zmq:PUB_EP,SUB_EP | can:DEVICE   (burst>0 => per-attempt GE)\n"
+            "  [src_addr] = CSP addr of the data source on the INGRESS side (default 5424);\n"
+            "               split-horizon: ingress only forwards frames FROM it, egress only\n"
+            "               forwards frames NOT from it (anything else is our own echo)\n"
+            "  [pace_us]  = delay after each egress forward (default 0 = line rate); use to\n"
+            "               slow below the receiver's drop threshold for reliable file deploys\n",
             argv[0]);
         return 2;
     }
@@ -139,6 +154,8 @@ int main(int argc, char **argv) {
     double      burst    = atof(argv[7]);
     uint64_t    seed     = strtoull(argv[8], NULL, 10);
     const char *log      = argv[9];
+    uint16_t    src_addr = (argc > 10) ? (uint16_t)atoi(argv[10]) : 5424;
+    useconds_t  pace_us  = (argc > 11) ? (useconds_t)atoi(argv[11]) : 0;
 
     if (overhead < CI_DTP_OFFSET_SIZE || overhead >= mtu) {
         fprintf(stderr, "ci_inject_bridge: invalid overhead %d (need %d <= overhead < mtu %d)\n",
@@ -191,31 +208,71 @@ int main(int argc, char **argv) {
         ci_drop_iface_enable_ge(&shim, p_g2b, p_b2g);   /* per-attempt: recovery is measurable */
     }
 
-    csp_bridge_set_interfaces(in_iface, &shim.iface);
-
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = on_sig;
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    printf("ci_inject_bridge: %s -> [shim: %s] -> %s | dport=%d mtu=%d overhead=%d loss=%.3f%s seed=%llu\n",
+    printf("ci_inject_bridge: %s -> [shim: %s] -> %s | dport=%d mtu=%d overhead=%d loss=%.3f%s seed=%llu src=%u\n",
            in_spec, burst > 0.0 ? "per-attempt GE" : "i.i.d. per-index", out_spec,
-           dport, mtu, overhead, loss, burst > 0.0 ? " burst" : "", (unsigned long long)seed);
+           dport, mtu, overhead, loss, burst > 0.0 ? " burst" : "", (unsigned long long)seed,
+           src_addr);
     fflush(stdout);
 
-    /* Bridge loop: the interface RX threads fill the qfifo; csp_bridge_work() forwards
-     * each frame to the opposite interface (egress via the shim). Mirrors the router
-     * pump in ci_monitor_host; csp_bridge_work() returns promptly when the qfifo is empty. */
+    /* Split-horizon bridge pump (replaces csp_bridge_work, which forwards blindly).
+     *
+     * A bridge on broadcast transports sees its own output again: the zmq broker is an
+     * XSUB/XPUB reflector, so every frame the bridge PUBLISHES comes back on its own
+     * subscription; one re-forwarded frame then laps zmq->can->zmq indefinitely (observed
+     * as 3-4x duplication of every DTP fragment, i.e. accidental redundancy that masked
+     * fire-and-forget loss). CRC dedup cannot catch it because the frame representation
+     * differs across transports. The fix is direction-by-source: the data source
+     * (src_addr, the upload server) lives on the INGRESS side, so
+     *   - ingress RX: forward ONLY frames FROM src_addr (anything else = broker echo
+     *     of our own can->zmq publication),
+     *   - egress RX: forward ONLY frames NOT from src_addr (a src_addr frame on the
+     *     egress side = our own egress TX seen again).
+     * Dedup stays on as a cheap second line for same-transport duplicates. */
     while (!g_stop) {
-        csp_bridge_work();
-        usleep(1000);
+        csp_qfifo_t input;
+        if (csp_qfifo_read(&input) != CSP_ERR_NONE) {
+            continue;   /* qfifo read timed out; loop to re-check g_stop */
+        }
+        csp_packet_t *packet = input.packet;
+        if (packet == NULL) {
+            continue;
+        }
+        if (csp_dedup_is_duplicate(packet)) {
+            csp_buffer_free(packet);
+            continue;
+        }
+        if (input.iface == in_iface) {
+            if (packet->id.src != src_addr) {
+                g_echo_in++;
+                csp_buffer_free(packet);
+                continue;
+            }
+            csp_send_direct_iface(&packet->id, packet, &shim.iface, CSP_NO_VIA_ADDRESS, 0);
+            if (pace_us) {
+                usleep(pace_us);   /* receiver-side overrun guard for deploys */
+            }
+        } else {
+            if (packet->id.src == src_addr) {
+                g_echo_out++;
+                csp_buffer_free(packet);
+                continue;
+            }
+            csp_send_direct_iface(&packet->id, packet, in_iface, CSP_NO_VIA_ADDRESS, 0);
+        }
     }
 
     if (drop_log) { fflush(drop_log); fclose(drop_log); }
-    printf("ci_inject_bridge: stopped. injected_drops=%llu forwarded=%llu passthrough=%llu\n",
+    printf("ci_inject_bridge: stopped. injected_drops=%llu forwarded=%llu passthrough=%llu "
+           "echoes_dropped(in=%llu out=%llu)\n",
            (unsigned long long)shim.injected_drops,
            (unsigned long long)shim.forwarded,
-           (unsigned long long)shim.passthrough);
+           (unsigned long long)shim.passthrough,
+           g_echo_in, g_echo_out);
     return 0;
 }
