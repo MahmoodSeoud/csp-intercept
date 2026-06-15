@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# satdeploy-sweep <arm_label>   (env: MAX_PASSES, LOSSES, SEEDS)
+# Arm B (satDeploy). Agent (smart|naive) must be running on the payload board as 5427.
+#
+# Per (loss,seed): push the pinned payload to a UNIQUE target repeatedly (resume ON
+# -- NO -F, same -r), fresh injector seed each pass, until the agent reports DEPLOYED
+# (its own sha256 verify) or MAX_PASSES. Records PASSES-TO-COMPLETE + cumulative
+# fragments injected = cost-of-resilience.  Resumable (skips status=ok rows).
+# Aborts cleanly (exit 2) if the agent stops answering — restart it and re-run.
+set -uo pipefail
+ARM="${1:?arm: smart|naive}"
+MAX_PASSES="${MAX_PASSES:-12}"
+REPO=/home/mseo/thesis/csp-intercept
+CSH=/home/mseo/thesis/csh/builddir/csh
+INJ="$REPO/build/tests/e2e/ci_inject_bridge"
+APMSO=/home/mseo/thesis/satDeploy/satdeploy-apm/build/libcsh_satdeploy_apm.so
+PAY="$REPO/captures/payload_256k.bin"
+OUT="$REPO/captures/satdeploy_sweep.csv"
+LOSSES="${LOSSES:-0 0.02 0.05 0.10 0.20 0.30}"
+SEEDS="${SEEDS:-1 2 3 4 5}"
+TOTAL=1058
+# Per-run namespace for the remote dest -> a board-FRESH app_name per cell, so a
+# prior run's persistent /opt/satdeploy state can't short-circuit a push as
+# "Already deployed" (contamination shows as overhead_ratio < 1.0). Bump TAG to
+# force a clean re-measure without resetting the board. Backup growth is bounded
+# by the agent's SATDEPLOY_BACKUP_KEEP cap.
+TAG="${TAG:-r2_}"
+strip(){ sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g'; }
+agent_up(){
+  printf 'csp init\ncsp add can -c can0 -b 0 -d 16\nping 5427\nsleep 2000\n' > /tmp/sds_ping.csh
+  timeout 12 script -qec "$CSH -i /tmp/sds_ping.csh" /dev/null </dev/null > /tmp/sds_ping.out 2>&1 || true
+  grep -qa "Reply in" /tmp/sds_ping.out
+}
+
+[ -f "$OUT" ] || echo "arm,loss,seed,label,passes,total_injected,total_dropped,overhead_ratio,result,status" > "$OUT"
+APMDIR=$(mktemp -d)/apm; mkdir -p "$APMDIR"; cp "$APMSO" "$APMDIR/"
+trap 'rm -rf "$(dirname "$APMDIR")"' EXIT
+agent_up || { echo "FAIL: agent 5427 not answering — launch satdeploy-agent-$ARM on the payload board"; exit 1; }
+
+for loss in $LOSSES; do for seed in $SEEDS; do
+  label="${ARM}_L${loss}_s${seed}"
+  if awk -F, -v a="$ARM" -v l="$loss" -v s="$seed" '$1==a&&$2==l&&$3==s&&$10=="ok"{f=1}END{exit !f}' "$OUT"; then echo "-- $label done, skip"; continue; fi
+  agent_up || { echo ">>> AGENT DOWN before $label — restart satdeploy-agent-$ARM on the payload board, then re-run (resumable). <<<"; exit 2; }
+  DEST="/home/root/sd_${TAG}${label}.bin"
+  total_inj=0; total_drop=0; result=INCOMPLETE; passes=0
+  setup_fails=0; SETUP_RETRIES="${SETUP_RETRIES:-4}"; attempt=0
+  # passes = DATA-bearing passes-to-complete; a push that injects 0 frags AND does
+  # not complete is a setup/handshake "hard error" (control ports aren't dropped),
+  # NOT data loss -- retry it (fresh process+seed) up to SETUP_RETRIES, uncounted.
+  while [ "$passes" -lt "$MAX_PASSES" ]; do
+    if pgrep -x ci_inject_bridge >/dev/null; then echo "$label: stray bridge"; result=ABORT; break; fi
+    attempt=$((attempt+1)); pidx=$((passes+1))
+    pseed=$((seed*1000 + pidx*10 + setup_fails))
+    ORA="$REPO/captures/${label}_p${pidx}_a${attempt}_oracleA.csv"; rm -f "$ORA"
+    timeout 120 "$INJ" zmq:tcp://127.0.0.1:6000,tcp://127.0.0.1:7000,5427 can:can0 8 256 8 "$loss" 4 "$pseed" "$ORA" 5425 >/dev/null 2>&1 &
+    INJPID=$!; sleep 3
+    INIT=$(mktemp --suffix=.csh)
+    printf 'csp init\ncsp add zmq -d 5425 127.0.0.1\napm load -p %s\nsatdeploy push -f %s -r %s -n 5427\nsleep 1500\nexit\n' "$APMDIR" "$PAY" "$DEST" > "$INIT"
+    timeout 130 script -qec "$CSH -i $INIT" /dev/null </dev/null >/tmp/${label}_p${pidx}_a${attempt}.log 2>&1 || true
+    rm -f "$INIT"; kill $INJPID 2>/dev/null; wait $INJPID 2>/dev/null || true
+    raw=$(awk -F, '!/^#/{c++}END{print c+0}' "$ORA"); drp=$(awk -F, '!/^#/&&$8==1{c++}END{print c+0}' "$ORA")
+    deployed=0
+    strip </tmp/${label}_p${pidx}_a${attempt}.log | grep -qaE "> Deployed|Already deployed" && deployed=1
+    if [ "$deployed" -eq 0 ] && [ "$raw" -eq 0 ]; then
+      agent_up || { echo ">>> AGENT DOWN during $label (attempt $attempt) — restart satdeploy-agent-$ARM, then re-run (resumable). <<<"; exit 2; }
+      setup_fails=$((setup_fails+1))
+      echo "  [$label] setup hard-error (0 injected, agent alive), retry $setup_fails/$SETUP_RETRIES"
+      if [ "$setup_fails" -ge "$SETUP_RETRIES" ]; then result=STUCK; break; fi
+      sleep 3; continue
+    fi
+    # Data-bearing pass: counts toward passes-to-complete + cost (incl. the completer).
+    total_inj=$((total_inj+raw)); total_drop=$((total_drop+drp)); passes=$((passes+1))
+    if [ "$deployed" -eq 1 ]; then result=DEPLOYED; break; fi
+  done
+  ratio=$(awk -v r=$total_inj -v t=$TOTAL 'BEGIN{if(t)printf "%.2f",r/t;else print "NA"}')
+  echo "$ARM,$loss,$seed,$label,$passes,$total_inj,$total_drop,$ratio,$result,ok" >> "$OUT"
+  echo "[$label] passes=$passes injected=$total_inj overhead=${ratio}x -> $result"
+  sleep 3
+done; done
+echo "== $ARM sweep done: $OUT =="

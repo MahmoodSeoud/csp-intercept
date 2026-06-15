@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# restart-upload-client - respawn the deployed upload_client by toggling mng_util
+# on the A53 (node 5421). The client exits after each transfer, so every measurement
+# point must restart it first. See memory [[restart-upload-client-a53]].
+#
+# Must toggle THROUGH 0: set 0 (fires kill/cleanup callback) then the client addr
+# (fires spawn). list download first so `set -n 5421 <name>` resolves the param.
+#
+# Usage: restart-upload-client [client_addr=5426] [server_addr=5424]
+# Exit 0 if the client answers ping, 1 otherwise.
+set -uo pipefail
+CLIENT="${1:-5426}"; SERVER="${2:-5424}"
+CSH=/home/mseo/thesis/csh/builddir/csh
+INIT=$(mktemp --suffix=.csh); OUT=$(mktemp)
+trap 'rm -f "$INIT" "$OUT"' EXIT
+{
+  echo "csp init"
+  echo "csp add can -c can0 -b 0 -d 16"
+  echo "list download 5421"
+  echo "set -n 5421 mng_util_server $SERVER"
+  echo "set -n 5421 mng_util_interface 0"
+  echo "set -n 5421 mng_util 0"
+  echo "sleep 4000"
+  echo "set -n 5421 mng_util $CLIENT"
+  echo "sleep 6000"
+  echo "ping $CLIENT"
+  echo "ping $CLIENT"
+  echo "sleep 1000"
+} > "$INIT"
+timeout 30 script -qec "$CSH -i $INIT" /dev/null </dev/null > "$OUT" 2>&1
+if sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$OUT" | grep -qaE "Ping node $CLIENT size 0 timeout 1000: Reply"; then
+  echo "[restart] upload_client $CLIENT is UP (pulls from $SERVER)"
+  exit 0
+fi
+echo "[restart] FAILED: $CLIENT did not answer ping after toggle"
+sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$OUT" | grep -aiE "mng_util|Ping node $CLIENT|error" | tail -6
+exit 1

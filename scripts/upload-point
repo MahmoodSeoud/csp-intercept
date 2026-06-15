@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# upload-point - one fully-instrumented loss point of the DEPLOYED dipp upload arm.
+#
+# Per point: (1) restart upload_client (it exits after each transfer), (2) start the
+# promiscuous csp_monitor (oracle B), (3) start the injector bridge (oracle A),
+# (4) fire ONE upload, (5) finalize and join the two oracles.
+#
+# Real dipp session MTU is 256 / overhead 4 (payload 252) -> ~1041 frags for 256 KiB,
+# confirmed from the server log (1024 KB/s / 4096 pkt/s = 256 B/pkt). The deployed
+# upload is fire-and-forget (server log: "Number of intervals: 1", sent once).
+# MTU/OVH are overridable for the satDeploy arm (8-byte header).
+#
+# Assumes loopback infra up: zmqproxy-lossy (6000/7000) + upload_gs-server (-a 5424,
+# started with cwd=.../upload_gs-server so it finds the pinned file.bin).
+#
+# Usage: upload-point <loss> <seed> <label>     e.g.  upload-point 0.10 1 v2
+set -uo pipefail
+LOSS="${1:?loss}"; SEED="${2:?seed}"; LABEL="${3:?label}"
+MTU="${MTU:-256}"; OVH="${OVH:-4}"; SRV_ADDR="${SRV_ADDR:-5424}"
+REPO=/home/mseo/thesis/csp-intercept
+CAP="$REPO/captures"
+CSH=/home/mseo/thesis/csh/builddir/csh
+INJ="$REPO/build/tests/e2e/ci_inject_bridge"
+MONSO="$REPO/build/apm/libcsh_csp_monitor.so"
+ORA="$CAP/${LABEL}_oracleA.csv"
+ORB="$CAP/${LABEL}_oracleB.csv"
+DEST="/home/root/csp_${LABEL}.bin"
+PSIZE=$(stat -c%s "$CAP/payload_256k.bin"); PAYLOAD=$((MTU-OVH)); TOTAL=$(( (PSIZE + PAYLOAD - 1) / PAYLOAD ))
+
+ss -ltn 2>/dev/null | grep -q ':6000' || { echo "FAIL: broker (6000) down"; exit 1; }
+pgrep -f 'upload_gs-server -z 127.0.0.1 -a 5424' >/dev/null || { echo "FAIL: upload_gs-server down"; exit 1; }
+[ -f "$MONSO" ] || { echo "FAIL: monitor APM not built"; exit 1; }
+# A second bridge subscribed to the broker double-forwards every frame onto can0
+# (zmq SUBs auto-reconnect, so a stale one survives broker restarts for DAYS) and
+# silently delivers the fragments this run drops — invalidating the whole point.
+# Found the hard way 2026-06-12: a June-10 bridge contaminated the entire first sweep.
+if pgrep -x ci_inject_bridge >/dev/null 2>&1; then
+  echo "FAIL: another ci_inject_bridge is already running — kill it first:"
+  pgrep -ax ci_inject_bridge
+  exit 1
+fi
+
+# 1) restart deployed client (exits after each transfer)
+bash "$REPO/scripts/restart-upload-client" 5426 5424 || { echo "FAIL: client restart"; exit 1; }
+rm -f "$ORA" "$ORB"
+
+# 2) promisc monitor = oracle B
+APMROOT=$(mktemp -d); APMDIR="$APMROOT/apm"; mkdir -p "$APMDIR"; cp "$MONSO" "$APMDIR/"
+MONINIT=$(mktemp --suffix=.csh)
+{
+  echo "csp init"; echo "csp add can -p -c can0 -b 0 19"; echo "apm load -p $APMDIR"
+  echo "sleep 800"; echo "csp_monitor start -d 8 -O $OVH -m $MTU -o $ORB"
+  echo "sleep 40000"; echo "csp_monitor stop"; echo "sleep 400"
+} > "$MONINIT"
+timeout 50 script -qec "$CSH -i $MONINIT" /dev/null </dev/null > "/tmp/${LABEL}_mon.log" 2>&1 &
+MONPID=$!
+sleep 3
+
+# 3) injector = oracle A
+timeout 40 "$INJ" zmq:tcp://127.0.0.1:6000,tcp://127.0.0.1:7000,5426 can:can0 8 "$MTU" "$OVH" "$LOSS" 4 "$SEED" "$ORA" >"/tmp/${LABEL}_inj.log" 2>&1 &
+INJPID=$!
+sleep 3
+
+# 4) fire ONE upload
+UPINIT=$(mktemp --suffix=.csh)
+{
+  echo "csp init"; echo "csp add can -c can0 -b 0 -d 16"; echo "apm load"
+  echo "upload_file -f $CAP/payload_256k.bin -d $DEST -n 5426 -s 5424"; echo "sleep 28000"
+} > "$UPINIT"
+timeout 33 script -qec "$CSH -i $UPINIT" /dev/null </dev/null > "/tmp/${LABEL}_trigger.log" 2>&1 || true
+rm -f "$UPINIT"
+
+# 5) finalize
+kill "$INJPID" 2>/dev/null; wait "$INJPID" 2>/dev/null || true
+wait "$MONPID" 2>/dev/null || true
+rm -rf "$APMROOT" "$MONINIT"
+
+# 6) join oracles (frag-index sets; oracle B filtered to server src so client port-8 pkts don't pollute)
+if [ ! -s "$ORA" ]; then echo "[$LABEL] FAIL: empty oracle A"; tail -6 "/tmp/${LABEL}_inj.log"; exit 1; fi
+awk -F, '!/^#/ && $8==1{print $6}' "$ORA" | sort -nu > "/tmp/${LABEL}.drp"
+awk -F, '!/^#/ && $8==0{print $6}' "$ORA" | sort -nu > "/tmp/${LABEL}.kpt"
+awk -F, -v s="$SRV_ADDR" '/^#/{next} $6==0 && $4==8 && $2==s {print $11}' "$ORB" 2>/dev/null | sort -nu > "/tmp/${LABEL}.obs"
+sent=$(awk -F, '!/^#/{print $6}' "$ORA" | sort -nu | grep -c .)
+dropped=$(grep -c . "/tmp/${LABEL}.drp"); kept=$(grep -c . "/tmp/${LABEL}.kpt"); observed=$(grep -c . "/tmp/${LABEL}.obs")
+drop_obs=$(awk 'FNR==NR{a[$1]=1;next}($1 in a){c++}END{print c+0}' "/tmp/${LABEL}.drp" "/tmp/${LABEL}.obs")
+kept_obs=$(awk 'FNR==NR{a[$1]=1;next}($1 in a){c++}END{print c+0}' "/tmp/${LABEL}.kpt" "/tmp/${LABEL}.obs")
+realized=$(awk -v d=$dropped -v t=$sent 'BEGIN{if(t)printf "%.3f",d/t; else print "NA"}')
+compl=$(awk -v o=$observed -v t=$TOTAL 'BEGIN{if(t)printf "%.1f%%",100*o/t; else print "NA"}')
+echo "[$LABEL] loss=$LOSS seed=$SEED  (MTU=$MTU ovh=$OVH, file=$TOTAL frags)"
+echo "  oracle A : sent_unique=$sent  kept=$kept  dropped=$dropped  realized=$realized"
+echo "  oracle B : observed_unique=$observed"
+echo "  AGREEMENT: dropped&observed=$drop_obs (want ~0)   kept&observed=$kept_obs / $kept"
+echo "  COMPLETION (deliv/total): $observed / $TOTAL = $compl"
+rm -f "/tmp/${LABEL}.drp" "/tmp/${LABEL}.kpt" "/tmp/${LABEL}.obs"

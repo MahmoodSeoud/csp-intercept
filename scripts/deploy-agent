@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# deploy-agent <smart|naive> [passes]
+# Push the PATCHED ARM agent binary to the payload board via the dipp uploader at
+# loss=0, accumulating passes (the deployed receiver corrupts silently -> N passes
+# converge geometrically; see [[satdeploy-arm-deploy]]). Dest = a FRESH path
+# /home/root/satdeploy-agent-<arm>-bk so the running old agent on 5427 is not
+# clobbered (no ETXTBSY). file.bin (pinned payload) is restored on exit no matter what.
+# After this, verify on the board (picocom): sha256sum must match, then chmod +x + launch.
+set -uo pipefail
+ARM="${1:?smart|naive}"; PASSES="${2:-6}"
+REPO=/home/mseo/thesis/csp-intercept
+CSH=/home/mseo/thesis/csh/builddir/csh
+INJ="$REPO/build/tests/e2e/ci_inject_bridge"
+SRV=/home/mseo/thesis/disco/src/upload_gs-server
+PIN="$REPO/captures/payload_256k.bin"
+case "$ARM" in
+  smart) BIN=/home/mseo/thesis/satDeploy/satdeploy-agent/build-arm/satdeploy-agent;;
+  naive) BIN=/home/mseo/thesis/satDeploy/satdeploy-agent/build-arm-naive/satdeploy-agent;;
+  *) echo "arm must be smart|naive"; exit 1;;
+esac
+DEST="/home/root/satdeploy-agent-${ARM}-bk"
+WANT=$(sha256sum "$BIN" | cut -d' ' -f1)
+
+ss -ltn 2>/dev/null | grep -q ':6000' || { echo "FAIL: broker(6000) down"; exit 1; }
+pgrep -f 'upload_gs-server -z 127.0.0.1 -a 5424' >/dev/null || { echo "FAIL: upload_gs-server down"; exit 1; }
+pgrep -x ci_inject_bridge >/dev/null && { echo "FAIL: stray bridge — kill it:"; pgrep -ax ci_inject_bridge; exit 1; }
+
+INJPID=
+restore(){ cp "$PIN" "$SRV/file.bin" && echo "[deploy] restored file.bin = pinned payload (2c1fa79a)"; }
+trap 'kill ${INJPID:-0} 2>/dev/null; restore' EXIT
+trap 'exit 143' INT TERM   # ensure SIGTERM (e.g. outer timeout) still runs the EXIT restore
+
+cp "$BIN" "$SRV/file.bin"
+echo "[deploy] file.bin <- $ARM agent ($(stat -c%s "$BIN") B, ~401 frags)  dest=$DEST  want=${WANT:0:16}…"
+
+for p in $(seq 1 "$PASSES"); do
+  bash "$REPO/scripts/restart-upload-client" 5426 5424 >/dev/null 2>&1 || { echo "[deploy] pass $p: client restart FAILED, skip"; continue; }
+  ORA=$(mktemp)
+  timeout 60 "$INJ" zmq:tcp://127.0.0.1:6000,tcp://127.0.0.1:7000,5426 can:can0 8 256 4 0 4 "$p" "$ORA" >/dev/null 2>&1 &
+  INJPID=$!; sleep 3
+  UP=$(mktemp --suffix=.csh)
+  printf 'csp init\ncsp add can -c can0 -b 0 -d 16\napm load\nupload_file -f %s -d %s -n 5426 -s 5424\nsleep 28000\n' "$BIN" "$DEST" > "$UP"
+  timeout 36 script -qec "$CSH -i $UP" /dev/null </dev/null > "/tmp/deploy_${ARM}_p${p}.log" 2>&1 || true
+  rm -f "$UP"; kill $INJPID 2>/dev/null; wait $INJPID 2>/dev/null || true; INJPID=
+  fwd=$(awk -F, '!/^#/{c++}END{print c+0}' "$ORA"); drp=$(awk -F, '!/^#/&&$8==1{c++}END{print c+0}' "$ORA"); rm -f "$ORA"
+  echo "[deploy] $ARM pass $p: forwarded=$fwd dropped=$drp  (want dropped=0)"
+done
+echo
+echo "== $ARM pushed ($PASSES passes). VERIFY ON THE BOARD (picocom): =="
+echo "   sha256sum $DEST      # expect: $WANT"
+echo "   chmod +x $DEST       # only if the hash matches"
