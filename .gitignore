@@ -28,6 +28,9 @@ compile_commands.json
 .cache/
 captures/
 
+# stray VM memory dumps (flatsat sim scratch; not part of the instrument)
+*.vmem
+
 # python tooling (scripts/)
 __pycache__/
 *.pyc
