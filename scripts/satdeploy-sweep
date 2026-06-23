@@ -25,6 +25,18 @@ TOTAL=1058
 # force a clean re-measure without resetting the board. Backup growth is bounded
 # by the agent's SATDEPLOY_BACKUP_KEEP cap.
 TAG="${TAG:-r2_}"
+# --- pacing (problem-statement requirement): emulate the 9.6 kbit/s uplink by
+# delaying each forwarded CSP packet by its serialization time at RATE_BPS. This
+# paces the FORWARD path only; it does NOT model the half-duplex turnaround /
+# return-path withholding (a separate change for the adversarial config + H3).
+# Set RATE_BPS to a large value for the old line-rate behaviour.
+RATE_BPS="${RATE_BPS:-9600}"
+MTU_B=256
+PACE_US=$(( RATE_BPS > 0 ? MTU_B * 8 * 1000000 / RATE_BPS : 0 ))
+SER_S=$(( TOTAL * PACE_US / 1000000 ))             # clean transmit time for the whole file
+PUSH_TO=$(( SER_S * 3 + 60 )); [ "$PUSH_TO" -lt 180 ] && PUSH_TO=180   # csh push ceiling (covers in-push gap-fill rounds)
+INJ_TO=$(( PUSH_TO + 60 ))                          # injector must outlive the push
+echo "pacing: RATE_BPS=$RATE_BPS pace_us=${PACE_US}us -> ~${SER_S}s/clean-pass; push_to=${PUSH_TO}s inj_to=${INJ_TO}s"
 strip(){ sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g'; }
 agent_up(){
   printf 'csp init\ncsp add can -c can0 -b 0 -d 16\nping 5427\nsleep 2000\n' > /tmp/sds_ping.csh
@@ -52,11 +64,11 @@ for loss in $LOSSES; do for seed in $SEEDS; do
     attempt=$((attempt+1)); pidx=$((passes+1))
     pseed=$((seed*1000 + pidx*10 + setup_fails))
     ORA="$REPO/captures/${label}_p${pidx}_a${attempt}_oracleA.csv"; rm -f "$ORA"
-    timeout 120 "$INJ" zmq:tcp://127.0.0.1:6000,tcp://127.0.0.1:7000,5427 can:can0 8 256 8 "$loss" 4 "$pseed" "$ORA" 5425 >/dev/null 2>&1 &
+    timeout "$INJ_TO" "$INJ" zmq:tcp://127.0.0.1:6000,tcp://127.0.0.1:7000,5427 can:can0 8 256 8 "$loss" 4 "$pseed" "$ORA" 5425 "$PACE_US" >/dev/null 2>&1 &
     INJPID=$!; sleep 3
     INIT=$(mktemp --suffix=.csh)
     printf 'csp init\ncsp add zmq -d 5425 127.0.0.1\napm load -p %s\nsatdeploy push -f %s -r %s -n 5427\nsleep 1500\nexit\n' "$APMDIR" "$PAY" "$DEST" > "$INIT"
-    timeout 130 script -qec "$CSH -i $INIT" /dev/null </dev/null >/tmp/${label}_p${pidx}_a${attempt}.log 2>&1 || true
+    timeout "$PUSH_TO" script -qec "$CSH -i $INIT" /dev/null </dev/null >/tmp/${label}_p${pidx}_a${attempt}.log 2>&1 || true
     rm -f "$INIT"; kill $INJPID 2>/dev/null; wait $INJPID 2>/dev/null || true
     raw=$(awk -F, '!/^#/{c++}END{print c+0}' "$ORA"); drp=$(awk -F, '!/^#/&&$8==1{c++}END{print c+0}' "$ORA")
     deployed=0

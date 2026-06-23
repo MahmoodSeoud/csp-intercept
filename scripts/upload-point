@@ -26,6 +26,17 @@ ORA="$CAP/${LABEL}_oracleA.csv"
 ORB="$CAP/${LABEL}_oracleB.csv"
 DEST="/home/root/csp_${LABEL}.bin"
 PSIZE=$(stat -c%s "$CAP/payload_256k.bin"); PAYLOAD=$((MTU-OVH)); TOTAL=$(( (PSIZE + PAYLOAD - 1) / PAYLOAD ))
+# --- pacing: emulate the 9.6 kbit/s uplink (FORWARD path only; no half-duplex
+# turnaround model -- that is a separate change for the adversarial config + H3).
+# Set RATE_BPS to a large value for the old line-rate behaviour.
+RATE_BPS="${RATE_BPS:-9600}"
+PACE_US=$(( RATE_BPS > 0 ? MTU * 8 * 1000000 / RATE_BPS : 0 ))
+SER_S=$(( TOTAL * PACE_US / 1000000 ))            # clean transmit time for the whole file
+INJ_TO=$(( SER_S + 90 )); [ "$INJ_TO" -lt 60 ] && INJ_TO=60
+TRIG_TO=$(( SER_S + 60 )); [ "$TRIG_TO" -lt 45 ] && TRIG_TO=45
+MON_TO=$(( SER_S + 120 )); [ "$MON_TO" -lt 70 ] && MON_TO=70
+TRIG_SLEEP_MS=$(( (SER_S + 40) * 1000 )); MON_SLEEP_MS=$(( (SER_S + 90) * 1000 ))
+echo "[$LABEL] pacing: RATE_BPS=$RATE_BPS pace_us=${PACE_US}us -> ~${SER_S}s transmit (inj_to=${INJ_TO}s mon_to=${MON_TO}s)"
 
 ss -ltn 2>/dev/null | grep -q ':6000' || { echo "FAIL: broker (6000) down"; exit 1; }
 pgrep -f 'upload_gs-server -z 127.0.0.1 -a 5424' >/dev/null || { echo "FAIL: upload_gs-server down"; exit 1; }
@@ -50,14 +61,14 @@ MONINIT=$(mktemp --suffix=.csh)
 {
   echo "csp init"; echo "csp add can -p -c can0 -b 0 19"; echo "apm load -p $APMDIR"
   echo "sleep 800"; echo "csp_monitor start -d 8 -O $OVH -m $MTU -o $ORB"
-  echo "sleep 40000"; echo "csp_monitor stop"; echo "sleep 400"
+  echo "sleep $MON_SLEEP_MS"; echo "csp_monitor stop"; echo "sleep 400"
 } > "$MONINIT"
-timeout 50 script -qec "$CSH -i $MONINIT" /dev/null </dev/null > "/tmp/${LABEL}_mon.log" 2>&1 &
+timeout "$MON_TO" script -qec "$CSH -i $MONINIT" /dev/null </dev/null > "/tmp/${LABEL}_mon.log" 2>&1 &
 MONPID=$!
 sleep 3
 
 # 3) injector = oracle A
-timeout 40 "$INJ" zmq:tcp://127.0.0.1:6000,tcp://127.0.0.1:7000,5426 can:can0 8 "$MTU" "$OVH" "$LOSS" 4 "$SEED" "$ORA" >"/tmp/${LABEL}_inj.log" 2>&1 &
+timeout "$INJ_TO" "$INJ" zmq:tcp://127.0.0.1:6000,tcp://127.0.0.1:7000,5426 can:can0 8 "$MTU" "$OVH" "$LOSS" 4 "$SEED" "$ORA" "$SRV_ADDR" "$PACE_US" >"/tmp/${LABEL}_inj.log" 2>&1 &
 INJPID=$!
 sleep 3
 
@@ -65,9 +76,9 @@ sleep 3
 UPINIT=$(mktemp --suffix=.csh)
 {
   echo "csp init"; echo "csp add can -c can0 -b 0 -d 16"; echo "apm load"
-  echo "upload_file -f $CAP/payload_256k.bin -d $DEST -n 5426 -s 5424"; echo "sleep 28000"
+  echo "upload_file -f $CAP/payload_256k.bin -d $DEST -n 5426 -s 5424"; echo "sleep $TRIG_SLEEP_MS"
 } > "$UPINIT"
-timeout 33 script -qec "$CSH -i $UPINIT" /dev/null </dev/null > "/tmp/${LABEL}_trigger.log" 2>&1 || true
+timeout "$TRIG_TO" script -qec "$CSH -i $UPINIT" /dev/null </dev/null > "/tmp/${LABEL}_trigger.log" 2>&1 || true
 rm -f "$UPINIT"
 
 # 5) finalize

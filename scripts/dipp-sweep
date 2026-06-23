@@ -16,6 +16,14 @@ OUT="$REPO/captures/dipp_sweep.csv"
 LOSSES="${LOSSES:-0 0.02 0.05 0.10 0.20 0.30}"
 SEEDS="${SEEDS:-1 2 3 4 5}"
 TOTAL_FRAGS=1041   # 256 KiB at MTU 256 / overhead 4
+# Outer per-point ceiling must cover upload-point's paced capture window
+# (monitor MON_TO = SER_S+120) plus client-restart + bus-settle setup. Mirror the
+# pacing math here so the wrapper scales with RATE_BPS. Set RATE_BPS large for line rate.
+RATE_BPS="${RATE_BPS:-9600}"
+PACE_US=$(( RATE_BPS > 0 ? 256 * 8 * 1000000 / RATE_BPS : 0 ))
+SER_S=$(( TOTAL_FRAGS * PACE_US / 1000000 ))
+POINT_TO=$(( SER_S + 240 )); [ "$POINT_TO" -lt 170 ] && POINT_TO=170
+echo "dipp-sweep pacing: RATE_BPS=$RATE_BPS -> ~${SER_S}s transmit, point ceiling ${POINT_TO}s"
 
 [ -f "$OUT" ] || echo "arm,loss,seed,label,sent,kept,dropped,realized,observedB,drop_obs,kept_obs,deliv_frac,status" > "$OUT"
 
@@ -27,7 +35,7 @@ for loss in $LOSSES; do
       continue
     fi
     echo "-- $label : running"
-    log=$(timeout 170 bash "$REPO/scripts/upload-point" "$loss" "$seed" "$label" 2>&1)
+    log=$(RATE_BPS="$RATE_BPS" timeout "$POINT_TO" bash "$REPO/scripts/upload-point" "$loss" "$seed" "$label" 2>&1)
     rc=$?
     echo "$log" | sed 's/^/   /'
     sent=$(echo "$log"    | grep -oE 'sent_unique=[0-9]+'    | cut -d= -f2 | head -1)
