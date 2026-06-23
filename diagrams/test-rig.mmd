@@ -1,0 +1,26 @@
+graph TD
+  F["Ground DTP server<br/>(upload_gs-server, node 5424)<br/>holds the 256 KiB file"]
+  INJ["LOSS INJECTOR - ci_inject_bridge<br/>paces to 9.6 kbit/s (real uplink)<br/>drops a seeded percent of packets<br/>logs every drop"]
+  OA["ORACLE A<br/>what I dropped"]
+  BUS{{"can0 bus<br/>(stands in for the UHF radio)"}}
+  MON["wire monitor"]
+  OB["ORACLE B<br/>what crossed the wire"]
+  RX["RECEIVER (node 5426)<br/>upload_sat-client / satDeploy agent / raw DTP client<br/>writes the delivered file"]
+  SHA["sha256 of the delivered file"]
+  OC["ORACLE C = the TRUTH<br/>right bytes or not?<br/>cannot be fooled"]
+
+  F -->|"DTP: control port 7, data port 8"| INJ
+  INJ -.->|logs drop| OA
+  INJ --> BUS
+  BUS -.->|tap| MON
+  MON -.->|observes| OB
+  BUS --> RX
+  RX --> SHA
+  SHA --> OC
+
+  classDef instrument fill:#fdebd0,stroke:#c0392b,stroke-width:3px;
+  classDef authoracle fill:#fff3cd,stroke:#e67e22,stroke-width:1px;
+  classDef truthoracle fill:#d4efdf,stroke:#27ae60,stroke-width:3px;
+  class INJ instrument;
+  class OA,OB,MON authoracle;
+  class OC truthoracle;
