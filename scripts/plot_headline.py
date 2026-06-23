@@ -5,8 +5,13 @@ Reads the two sweep CSVs produced on the live can0 flatsat and renders the
 3-arm comparison (dipp / satDeploy-naive / satDeploy-smart) plus the cost of
 completion for the smart arm. Pure on-disk data; no live bus needed.
 
-  scripts/dipp_sweep.csv      -> Arm A (fire-and-forget baseline)
-  scripts/satdeploy_sweep.csv -> Arm B (smart) + Arm C (naive)
+  captures/dipp_sweep.csv      -> Arm A (fire-and-forget baseline)
+  captures/satdeploy_sweep.csv -> Arm B (smart) + Arm C (naive)
+
+Completion is a proportion (k of n seeds), so panel (a) shows Wilson 95%
+confidence intervals as error bars; with small n the intervals are wide, which
+is the honest way to present k/n (and visibly reflects the per-arm n: dipp and
+smart n=5, naive n=3).
 
 Output: figures/completion_vs_loss.{png,pdf}
 """
@@ -25,21 +30,33 @@ CAP = os.path.join(ROOT, "captures")
 FIGDIR = os.path.join(ROOT, "figures")
 
 
+def wilson(k, n, z=1.96):
+    """Wilson score 95% CI for a binomial proportion. Returns (p, lo, hi)."""
+    if n == 0:
+        return 0.0, 0.0, 0.0
+    p = k / n
+    denom = 1.0 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    half = (z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5)) / denom
+    return p, max(0.0, center - half), min(1.0, center + half)
+
+
 def load_dipp():
-    """dipp completion = fraction of seeds delivering every fragment (kept==sent)."""
-    byloss = defaultdict(list)
+    """dipp completion per loss = [k complete, n seeds]; complete = kept==sent."""
+    byloss = defaultdict(lambda: [0, 0])
     with open(os.path.join(CAP, "dipp_sweep.csv")) as f:
         for r in csv.DictReader(f):
             if r["status"] != "ok":
                 continue
-            complete = int(r["kept"]) == int(r["sent"])
-            byloss[float(r["loss"])].append(1.0 if complete else 0.0)
-    return {l: sum(v) / len(v) for l, v in byloss.items()}
+            byloss[float(r["loss"])][1] += 1
+            if int(r["kept"]) == int(r["sent"]):
+                byloss[float(r["loss"])][0] += 1
+    return byloss
 
 
 def load_satdeploy():
-    """smart/naive completion = fraction DEPLOYED; also smart passes + overhead."""
-    comp = {"smart": defaultdict(list), "naive": defaultdict(list)}
+    """smart/naive completion per loss = [k DEPLOYED, n]; also smart passes + overhead."""
+    comp = {"smart": defaultdict(lambda: [0, 0]), "naive": defaultdict(lambda: [0, 0])}
     passes = defaultdict(list)
     overhead = defaultdict(list)
     with open(os.path.join(CAP, "satdeploy_sweep.csv")) as f:
@@ -47,19 +64,26 @@ def load_satdeploy():
             if r["status"] != "ok":
                 continue
             arm, loss = r["arm"], float(r["loss"])
-            comp[arm][loss].append(1.0 if r["result"] == "DEPLOYED" else 0.0)
+            comp[arm][loss][1] += 1
+            if r["result"] == "DEPLOYED":
+                comp[arm][loss][0] += 1
             if arm == "smart":
                 passes[loss].append(int(r["passes"]))
                 overhead[loss].append(float(r["overhead_ratio"]))
-    frac = {a: {l: sum(v) / len(v) for l, v in d.items()} for a, d in comp.items()}
     pass_avg = {l: sum(v) / len(v) for l, v in passes.items()}
     ovh_avg = {l: sum(v) / len(v) for l, v in overhead.items()}
-    return frac, pass_avg, ovh_avg
+    return comp, pass_avg, ovh_avg
 
 
-def series(d):
-    xs = sorted(d)
-    return [x * 100 for x in xs], [d[x] for x in xs]
+def ci_series(byloss):
+    """dict loss->[k,n]  ->  (xs%, ps, yerr_lo, yerr_hi) for ax.errorbar."""
+    xs = sorted(byloss)
+    ps, lo, hi = [], [], []
+    for x in xs:
+        k, n = byloss[x]
+        p, l, h = wilson(k, n)
+        ps.append(p); lo.append(p - l); hi.append(h - p)
+    return [x * 100 for x in xs], ps, [lo, hi]
 
 
 def main():
@@ -69,19 +93,24 @@ def main():
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.2))
 
-    # Panel (a): completion probability vs loss
-    x, y = series(dipp)
-    ax1.plot(x, y, "o-", color="#c0392b", label="dipp (fire-and-forget)", lw=2, ms=6)
-    x, y = series(sat["naive"])
-    ax1.plot(x, y, "s--", color="#e67e22", label="satDeploy-naive (recovery off)", lw=2, ms=6)
-    x, y = series(sat["smart"])
-    ax1.plot(x, y, "^-", color="#27ae60", label="satDeploy-smart (retry+resume)", lw=2.5, ms=7)
+    # Panel (a): completion probability vs loss, with Wilson 95% CIs
+    x, y, e = ci_series(dipp)
+    ax1.errorbar(x, y, yerr=e, fmt="o-", color="#c0392b", lw=2, ms=6, capsize=3,
+                 label="dipp (fire-and-forget)")
+    x, y, e = ci_series(sat["naive"])
+    ax1.errorbar(x, y, yerr=e, fmt="s--", color="#e67e22", lw=2, ms=6, capsize=3,
+                 label="satDeploy-naive (recovery off)")
+    x, y, e = ci_series(sat["smart"])
+    ax1.errorbar(x, y, yerr=e, fmt="^-", color="#27ae60", lw=2.5, ms=7, capsize=3,
+                 label="satDeploy-smart (retry+resume)")
     ax1.set_xlabel("Injected per-fragment loss (%)")
     ax1.set_ylabel("Completion probability")
-    ax1.set_ylim(-0.05, 1.08)
+    ax1.set_ylim(-0.05, 1.12)
     ax1.set_title("(a) File completion vs loss")
     ax1.grid(True, alpha=0.3)
     ax1.legend(loc="center right", fontsize=9)
+    ax1.text(0.02, 0.02, "error bars: Wilson 95% CI  (n=5 dipp/smart, n=3 naive)",
+             transform=ax1.transAxes, fontsize=7.5, color="#555", va="bottom")
 
     # Panel (b): the cost of completion (smart only)
     xs = sorted(passes)
