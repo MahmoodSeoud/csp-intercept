@@ -26,7 +26,19 @@ package-lock.json
 .DS_Store
 compile_commands.json
 .cache/
-captures/
+
+# Capture outputs. Most files under captures/ are reproducible scratch: per-pass
+# oracle traces (converge_*, deploy_*, dbg_*), live-bus snapshots (can0_*), and
+# debug runs. Those stay untracked — they regenerate from the scripts.
+#
+# The exception is the HEADLINE EVIDENCE: the sweep result tables and the written
+# findings. These are the thesis deliverable, they cost flatsat hardware + hours
+# to regenerate, and they are the one thing that must survive a disk loss. So we
+# ignore the directory and explicitly negate the evidence back in.
+captures/*
+!captures/*_sweep.csv
+!captures/rq3_corruption.csv
+!captures/*_finding.md
 
 # stray VM memory dumps (flatsat sim scratch; not part of the instrument)
 *.vmem
@@ -34,3 +46,4 @@ captures/
 # python tooling (scripts/)
 __pycache__/
 *.pyc
+.gstack/
