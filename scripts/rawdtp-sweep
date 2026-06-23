@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# rawdtp-sweep - H2 "raw DTP" arm loss sweep over scripts/rawdtp-point.
+#
+# Output schema MATCHES captures/satdeploy_sweep.csv so H2 is a direct comparison:
+#   arm,loss,seed,label,passes,total_injected,total_dropped,overhead_ratio,result,status
+# arm = "rawdtp". Resumable: a (loss,seed) already DELIVERED/recorded is skipped.
+#
+# Usage: rawdtp-sweep                         # full grid
+#        LOSSES="0.10" SEEDS="1" rawdtp-sweep # subset / smoke
+set -uo pipefail
+REPO=/home/mseo/thesis/csp-intercept
+OUT="$REPO/captures/rawdtp_sweep.csv"
+LOSSES="${LOSSES:-0 0.02 0.05 0.10 0.20 0.30}"
+SEEDS="${SEEDS:-1 2 3 4 5}"
+MAX_PASSES="${MAX_PASSES:-12}"
+RATE_BPS="${RATE_BPS:-9600}"
+TOTAL_FRAGS=1041
+PACE_US=$(( RATE_BPS > 0 ? 256 * 8 * 1000000 / RATE_BPS : 0 ))
+SER_S=$(( TOTAL_FRAGS * PACE_US / 1000000 ))
+# outer ceiling must cover up to MAX_PASSES paced passes + setup
+POINT_TO=$(( (SER_S + 120) * MAX_PASSES + 120 )); [ "$POINT_TO" -lt 300 ] && POINT_TO=300
+echo "rawdtp-sweep: RATE_BPS=$RATE_BPS ~${SER_S}s/full-pass, MAX_PASSES=$MAX_PASSES, point ceiling ${POINT_TO}s"
+
+# schema extends satdeploy_sweep with sha256_verdict: the H2 finding IS the divergence
+# between result (what DTP reports) and sha256_verdict (whether the bytes are actually correct).
+[ -f "$OUT" ] || echo "arm,loss,seed,label,passes,total_injected,total_dropped,overhead_ratio,result,sha256_verdict,status" > "$OUT"
+
+for loss in $LOSSES; do for seed in $SEEDS; do
+  label="dtp_L${loss}_s${seed}"
+  if awk -F, -v l="$loss" -v s="$seed" '$1=="rawdtp" && $2==l && $3==s && $11=="ok"{f=1} END{exit !f}' "$OUT"; then
+    echo "-- $label already done, skipping"; continue
+  fi
+  echo "-- $label : running"
+  log=$(RATE_BPS="$RATE_BPS" MAX_PASSES="$MAX_PASSES" timeout "$POINT_TO" bash "$REPO/scripts/rawdtp-point" "$loss" "$seed" "$label" 2>&1)
+  rc=$?
+  echo "$log" | sed 's/^/   /'
+  line=$(echo "$log" | grep '^RESULT ' | tail -1)
+  if [ -z "$line" ] || [ "$rc" -ne 0 ]; then
+    echo "   !! $label FAILED (rc=$rc, no RESULT line) — not recorded, rerun resumable"
+    continue
+  fi
+  read -r _ passes inj drop result sha <<<"$line"
+  ovh=$(awk -v t="$inj" -v f="$TOTAL_FRAGS" 'BEGIN{if(f)printf "%.2f", t/f; else print "NA"}')
+  echo "rawdtp,$loss,$seed,$label,$passes,$inj,$drop,$ovh,$result,$sha,ok" >> "$OUT"
+  echo "   recorded: passes=$passes overhead=${ovh}x result=$result sha=$sha"
+done; done
+echo "=== rawdtp sweep done -> $OUT ==="
+column -t -s, "$OUT" 2>/dev/null || cat "$OUT"
