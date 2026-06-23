@@ -27,7 +27,7 @@ pgrep -x ci_inject_bridge >/dev/null && { echo "FAIL: stray bridge — kill it:"
 
 INJPID=
 restore(){ cp "$PIN" "$SRV/file.bin" && echo "[deploy] restored file.bin = pinned payload (2c1fa79a)"; }
-trap 'kill ${INJPID:-0} 2>/dev/null; restore' EXIT
+trap 'kill "${INJPID:-}" 2>/dev/null; restore' EXIT
 trap 'exit 143' INT TERM   # ensure SIGTERM (e.g. outer timeout) still runs the EXIT restore
 
 cp "$BIN" "$SRV/file.bin"
