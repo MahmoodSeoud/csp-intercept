@@ -38,6 +38,7 @@ compile_commands.json
 captures/*
 !captures/*_sweep.csv
 !captures/rq3_corruption.csv
+!captures/flight_dtp_*.csv
 !captures/*_finding.md
 
 # stray VM memory dumps (flatsat sim scratch; not part of the instrument)
