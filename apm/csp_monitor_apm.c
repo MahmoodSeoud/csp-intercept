@@ -24,6 +24,7 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <stdint.h>
 #include <pthread.h>
 
@@ -40,6 +41,7 @@
 #include "ci_rdp.h"
 #include "ci_dtp.h"
 #include "ci_meas.h"
+#include "ci_sha256.h"
 
 /* --- monitor state (persists across slash invocations) --- */
 static pthread_t mon_thread;
@@ -265,6 +267,115 @@ static int csp_monitor_stop_cmd(struct slash *slash) {
 }
 slash_command_sub(csp_monitor, stop, csp_monitor_stop_cmd, "",
                   "Stop the link monitor and close the CSV");
+
+/* --- verify: the integrity oracle (oracle C) as a csh command ---
+ *
+ * `verify -c <manifest> <file>` answers the one thing the uploader's "delivered"
+ * signal cannot be trusted on: did the bytes survive. Mirrors `sha256sum -c`:
+ * quiet "FILE: OK" on a match, loud "FILE: FAILED" with expected/received on a
+ * mismatch. The verdict is the printed line (csh has no shell exit code to lean
+ * on). Byte-diff + the missing-fragment recovery list stay in the host CLI
+ * (scripts/csp-verify); on the satellite you don't have the original to diff
+ * against anyway, so the sha verdict is the in-csh contract. */
+static int verify_read_manifest_sha(const char *path, char want[65]) {
+    FILE *f = fopen(path, "r");
+    if (f == NULL) {
+        return -1;
+    }
+    char line[512];
+    int n = 0;
+    while (fgets(line, sizeof(line), f) != NULL) {
+        char *s = strstr(line, "sha256:");
+        if (s == NULL) {
+            continue;
+        }
+        s += 7;
+        while (*s == ' ' || *s == '\t') {
+            s++;
+        }
+        while (n < 64 && ((*s >= '0' && *s <= '9') || (*s >= 'a' && *s <= 'f') ||
+                          (*s >= 'A' && *s <= 'F'))) {
+            want[n++] = *s++;
+        }
+        break;
+    }
+    fclose(f);
+    want[n] = '\0';
+    return (n == 64) ? 0 : -1;
+}
+
+static int verify_cmd(struct slash *slash) {
+    char *manifest = NULL;
+    char *expected = NULL;
+    char *reported = NULL;
+    int   verbose  = 0;
+
+    optparse_t *p = optparse_new("verify", "FILE");
+    optparse_add_help(p);
+    optparse_add_string(p, 'c', "manifest", "FILE", &manifest, "source manifest with expected sha256");
+    optparse_add_string(p, 'e', "expected", "SHA256", &expected, "expected sha256 hex (instead of -c)");
+    optparse_add_string(p, 'r', "reported", "STATUS", &reported, "what the transport claimed, e.g. delivered");
+    optparse_add_set(p, 'v', "verbose", 1, &verbose, "full hashes");
+    int argi = optparse_parse(p, slash->argc - 1, (const char **)slash->argv + 1);
+    if (argi < 0) {
+        optparse_del(p);
+        return SLASH_EINVAL;
+    }
+    /* optparse parsed argv+1, so the first positional is argv[1 + argi]. */
+    if (1 + argi >= slash->argc) {
+        printf("verify: missing FILE\n");
+        optparse_del(p);
+        return SLASH_EINVAL;
+    }
+    const char *file = slash->argv[1 + argi];
+    optparse_del(p);
+
+    char want[65] = {0};
+    if (expected != NULL) {
+        strncpy(want, expected, 64);
+        want[64] = '\0';
+    } else if (manifest != NULL) {
+        if (verify_read_manifest_sha(manifest, want) != 0) {
+            printf("verify: no sha256 in manifest %s\n", manifest);
+            return SLASH_EINVAL;
+        }
+    } else {
+        printf("verify: need -c MANIFEST or -e SHA256\n");
+        return SLASH_EINVAL;
+    }
+
+    char got[65];
+    uint64_t nbytes = 0;
+    if (ci_sha256_file(file, got, &nbytes) != 0) {
+        printf("verify: cannot read %s\n", file);
+        return SLASH_EIO;
+    }
+
+    if (strcasecmp(got, want) == 0) {
+        printf("%s: OK\n", file);
+        if (verbose) {
+            printf("  sha256   %s\n", got);
+            printf("  bytes    %llu\n", (unsigned long long)nbytes);
+        }
+        return SLASH_SUCCESS;
+    }
+
+    if (reported != NULL) {
+        printf("%s: FAILED - reported \"%s\" but file is corrupt\n", file, reported);
+    } else {
+        printf("%s: FAILED - checksum mismatch\n", file);
+    }
+    if (verbose) {
+        printf("  expected   %s\n", want);
+        printf("  received   %s\n", got);
+    } else {
+        printf("  expected   %.8s...%s\n", want, want + 58);
+        printf("  received   %.8s...%s\n", got, got + 58);
+    }
+    return SLASH_SUCCESS;
+}
+slash_command(verify, verify_cmd, "[-c MANIFEST | -e SHA256] [-r STATUS] [-v] FILE",
+              "Verify a delivered file against its expected sha256 (OK/FAILED)");
 
 int apm_init(void) {
     return 0;

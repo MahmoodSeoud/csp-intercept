@@ -17,6 +17,7 @@
 #include "ci_dtp.h"
 #include "ci_rule.h"
 #include "ci_meas.h"
+#include "ci_sha256.h"
 
 static int g_fail = 0;
 static int g_pass = 0;
@@ -334,6 +335,81 @@ static void test_measurement_suspect(void) {
     CHECK(ci_u8_delta(0, 255) == 255, "u8 delta: 0->255 = 255");
 }
 
+/* ---- SHA-256 (the integrity oracle's primitive) — FIPS 180-4 / NIST vectors ---- */
+
+static void sha_hex(const void *data, size_t len, char out[65]) {
+    ci_sha256_t c;
+    ci_sha256_init(&c);
+    ci_sha256_update(&c, data, len);
+    uint8_t d[32];
+    ci_sha256_final(&c, d);
+    static const char hx[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[i * 2] = hx[d[i] >> 4];
+        out[i * 2 + 1] = hx[d[i] & 0x0f];
+    }
+    out[64] = '\0';
+}
+
+static void test_sha256(void) {
+    char h[65];
+
+    /* canonical NIST vectors */
+    sha_hex("", 0, h);
+    CHECK(strcmp(h, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") == 0,
+          "sha256(empty)");
+    sha_hex("abc", 3, h);
+    CHECK(strcmp(h, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") == 0,
+          "sha256(abc)");
+    /* 56 bytes: forces the two-block final padding path (0x80 lands past offset 55) */
+    const char *m56 = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+    sha_hex(m56, 56, h);
+    CHECK(strcmp(h, "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1") == 0,
+          "sha256(56-byte, 2-block pad)");
+    /* 112 bytes: multiple transform blocks */
+    const char *m112 = "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmno"
+                       "ijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu";
+    sha_hex(m112, 112, h);
+    CHECK(strcmp(h, "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1") == 0,
+          "sha256(112-byte multi-block)");
+
+    /* streaming across update() calls must match the one-shot hash */
+    ci_sha256_t c;
+    ci_sha256_init(&c);
+    ci_sha256_update(&c, "ab", 2);
+    ci_sha256_update(&c, "c", 1);
+    uint8_t d[32];
+    ci_sha256_final(&c, d);
+    char h2[65];
+    static const char hx[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        h2[i * 2] = hx[d[i] >> 4];
+        h2[i * 2 + 1] = hx[d[i] & 0x0f];
+    }
+    h2[64] = '\0';
+    CHECK(strcmp(h2, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") == 0,
+          "sha256 streaming (ab|c) == sha256(abc)");
+
+    /* ci_sha256_file: hashes file bytes, reports count, -1 on missing */
+    const char *tp = "/tmp/ci_sha256_test_abc.bin";
+    FILE *wf = fopen(tp, "wb");
+    CHECK(wf != NULL, "open temp file");
+    if (wf != NULL) {
+        size_t wn = fwrite("abc", 1, 3, wf);
+        fclose(wf);
+        CHECK(wn == 3, "wrote 3 bytes");
+        char fh[65];
+        uint64_t n = 0;
+        CHECK(ci_sha256_file(tp, fh, &n) == 0, "ci_sha256_file returns 0");
+        CHECK(n == 3, "ci_sha256_file byte count == 3");
+        CHECK(strcmp(fh, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") == 0,
+              "ci_sha256_file(abc)");
+        remove(tp);
+    }
+    CHECK(ci_sha256_file("/nonexistent/ci/path/xyz", h, NULL) == -1,
+          "ci_sha256_file missing -> -1");
+}
+
 int main(void) {
     test_rdp_parse();
     test_dtp_parse();
@@ -346,6 +422,7 @@ int main(void) {
     test_seq_tracker();
     test_rtt_pairing();
     test_measurement_suspect();
+    test_sha256();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

@@ -36,7 +36,7 @@ ci_strict = ['c_std=c11', 'warning_level=2', 'werror=true']
 # the parse/rule/measurement layer, so it is trivially unit-testable.
 ci_inc = include_directories('lib')
 ci_lib = static_library('ci',
-  ['lib/ci_rdp.c', 'lib/ci_dtp.c', 'lib/ci_rule.c', 'lib/ci_meas.c', 'lib/ci_ge.c'],
+  ['lib/ci_rdp.c', 'lib/ci_dtp.c', 'lib/ci_rule.c', 'lib/ci_meas.c', 'lib/ci_ge.c', 'lib/ci_sha256.c'],
   include_directories: ci_inc,
   override_options: ci_strict,
   install: false)
