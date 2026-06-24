@@ -23,8 +23,16 @@ volume and rate (the upload direction), it is not a delivery or loss measure.
 import argparse
 import csv
 import json
+import os
 import sys
 from collections import defaultdict
+
+# Shared "what is a blackout" definition + percentile (DRY with
+# within_pass_blackouts.py, eng-review F1). scripts/ is sys.path[0] when run as a
+# script; insert it explicitly so an `import real_regime_annotation` from another
+# cwd still resolves the sibling module.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _regime_common import detect_blackouts, percentile  # noqa: E402
 
 
 def positive_delta(values):
@@ -35,32 +43,6 @@ def positive_delta(values):
         if b > a:
             total += b - a
     return total
-
-
-def percentile(xs, p):
-    """Linear-interpolated percentile (p in 0..100). [] -> None."""
-    if not xs:
-        return None
-    s = sorted(xs)
-    if len(s) == 1:
-        return float(s[0])
-    k = (len(s) - 1) * (p / 100.0)
-    lo = int(k)
-    hi = min(lo + 1, len(s) - 1)
-    return float(s[lo] + (s[hi] - s[lo]) * (k - lo))
-
-
-def detect_blackouts(epochs_s, gap_factor, min_floor_s=2.0):
-    """epochs_s: sorted seconds. Returns (median_interval_s, [gap_s, ...]) for gaps
-    exceeding max(gap_factor*median, min_floor_s). <3 samples -> (None, [])."""
-    if len(epochs_s) < 3:
-        return (None, [])
-    deltas = [b - a for a, b in zip(epochs_s, epochs_s[1:]) if b > a]
-    if not deltas:
-        return (None, [])
-    med = percentile(deltas, 50)   # interpolated, consistent with the aggregate percentiles
-    thresh = max(gap_factor * med, min_floor_s)
-    return (med, [d for d in deltas if d > thresh])
 
 
 def _inc(series, metric):
