@@ -32,7 +32,7 @@ PAY="$CAP/payload_256k.bin"
 ORIG_SHA=$(awk '/sha256:/{print $2}' "$CAP/payload_256k.manifest")
 PSIZE=$(stat -c%s "$PAY"); PAYLOAD=$((MTU-OVH)); TOTAL=$(( (PSIZE + PAYLOAD - 1) / PAYLOAD ))
 
-RATE_BPS="${RATE_BPS:-9600}"
+RATE_BPS="${RATE_BPS:-4800}"
 PACE_US=$(( RATE_BPS > 0 ? MTU * 8 * 1000000 / RATE_BPS : 0 ))
 SER_S=$(( TOTAL * PACE_US / 1000000 ))
 PASS_TO=$(( SER_S + 90 )); [ "$PASS_TO" -lt 60 ] && PASS_TO=60

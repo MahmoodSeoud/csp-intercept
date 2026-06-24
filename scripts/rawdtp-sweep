@@ -13,7 +13,7 @@ OUT="$REPO/captures/rawdtp_sweep.csv"
 LOSSES="${LOSSES:-0 0.02 0.05 0.10 0.20 0.30}"
 SEEDS="${SEEDS:-1 2 3 4 5}"
 MAX_PASSES="${MAX_PASSES:-12}"
-RATE_BPS="${RATE_BPS:-9600}"
+RATE_BPS="${RATE_BPS:-4800}"
 TOTAL_FRAGS=1041
 PACE_US=$(( RATE_BPS > 0 ? 256 * 8 * 1000000 / RATE_BPS : 0 ))
 SER_S=$(( TOTAL_FRAGS * PACE_US / 1000000 ))
@@ -23,7 +23,7 @@ echo "rawdtp-sweep: RATE_BPS=$RATE_BPS ~${SER_S}s/full-pass, MAX_PASSES=$MAX_PAS
 
 # schema extends satdeploy_sweep with sha256_verdict: the H2 finding IS the divergence
 # between result (what DTP reports) and sha256_verdict (whether the bytes are actually correct).
-[ -f "$OUT" ] || echo "arm,loss,seed,label,passes,total_injected,total_dropped,overhead_ratio,result,sha256_verdict,status" > "$OUT"
+[ -f "$OUT" ] || echo "arm,loss,seed,label,passes,total_injected,total_dropped,overhead_ratio,result,sha256_verdict,status,rate_bps" > "$OUT"
 
 for loss in $LOSSES; do for seed in $SEEDS; do
   label="dtp_L${loss}_s${seed}"
@@ -41,7 +41,7 @@ for loss in $LOSSES; do for seed in $SEEDS; do
   fi
   read -r _ passes inj drop result sha <<<"$line"
   ovh=$(awk -v t="$inj" -v f="$TOTAL_FRAGS" 'BEGIN{if(f)printf "%.2f", t/f; else print "NA"}')
-  echo "rawdtp,$loss,$seed,$label,$passes,$inj,$drop,$ovh,$result,$sha,ok" >> "$OUT"
+  echo "rawdtp,$loss,$seed,$label,$passes,$inj,$drop,$ovh,$result,$sha,ok,$RATE_BPS" >> "$OUT"
   echo "   recorded: passes=$passes overhead=${ovh}x result=$result sha=$sha"
 done; done
 echo "=== rawdtp sweep done -> $OUT ==="

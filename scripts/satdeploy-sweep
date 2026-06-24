@@ -30,7 +30,7 @@ TAG="${TAG:-r2_}"
 # paces the FORWARD path only; it does NOT model the half-duplex turnaround /
 # return-path withholding (a separate change for the adversarial config + H3).
 # Set RATE_BPS to a large value for the old line-rate behaviour.
-RATE_BPS="${RATE_BPS:-9600}"
+RATE_BPS="${RATE_BPS:-4800}"
 MTU_B=256
 PACE_US=$(( RATE_BPS > 0 ? MTU_B * 8 * 1000000 / RATE_BPS : 0 ))
 SER_S=$(( TOTAL * PACE_US / 1000000 ))             # clean transmit time for the whole file
@@ -44,7 +44,7 @@ agent_up(){
   grep -qa "Reply in" /tmp/sds_ping.out
 }
 
-[ -f "$OUT" ] || echo "arm,loss,seed,label,passes,total_injected,total_dropped,overhead_ratio,result,status" > "$OUT"
+[ -f "$OUT" ] || echo "arm,loss,seed,label,passes,total_injected,total_dropped,overhead_ratio,result,status,rate_bps" > "$OUT"
 APMDIR=$(mktemp -d)/apm; mkdir -p "$APMDIR"; cp "$APMSO" "$APMDIR/"
 trap 'rm -rf "$(dirname "$APMDIR")"' EXIT
 agent_up || { echo "FAIL: agent 5427 not answering — launch satdeploy-agent-$ARM on the payload board"; exit 1; }
@@ -85,7 +85,7 @@ for loss in $LOSSES; do for seed in $SEEDS; do
     if [ "$deployed" -eq 1 ]; then result=DEPLOYED; break; fi
   done
   ratio=$(awk -v r=$total_inj -v t=$TOTAL 'BEGIN{if(t)printf "%.2f",r/t;else print "NA"}')
-  echo "$ARM,$loss,$seed,$label,$passes,$total_inj,$total_drop,$ratio,$result,ok" >> "$OUT"
+  echo "$ARM,$loss,$seed,$label,$passes,$total_inj,$total_drop,$ratio,$result,ok,$RATE_BPS" >> "$OUT"
   echo "[$label] passes=$passes injected=$total_inj overhead=${ratio}x -> $result"
   sleep 3
 done; done

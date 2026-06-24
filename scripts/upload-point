@@ -29,7 +29,7 @@ PSIZE=$(stat -c%s "$CAP/payload_256k.bin"); PAYLOAD=$((MTU-OVH)); TOTAL=$(( (PSI
 # --- pacing: emulate the 9.6 kbit/s uplink (FORWARD path only; no half-duplex
 # turnaround model -- that is a separate change for the adversarial config + H3).
 # Set RATE_BPS to a large value for the old line-rate behaviour.
-RATE_BPS="${RATE_BPS:-9600}"
+RATE_BPS="${RATE_BPS:-4800}"
 PACE_US=$(( RATE_BPS > 0 ? MTU * 8 * 1000000 / RATE_BPS : 0 ))
 SER_S=$(( TOTAL * PACE_US / 1000000 ))            # clean transmit time for the whole file
 INJ_TO=$(( SER_S + 90 )); [ "$INJ_TO" -lt 60 ] && INJ_TO=60
