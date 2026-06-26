@@ -2,7 +2,7 @@
 
 **One line:** DISCO-2's file-upload software reports "File uploaded." while delivering a
 corrupted file under realistic link loss. Measured on a flatsat replica, paced to the real
-9.6 kbit/s uplink, confirmed by an independent SHA-256 oracle.
+~4800 bit/s UHF uplink, confirmed by an independent SHA-256 oracle.
 
 *Prepared by {your name}, DISCO team / Aarhus University. Audit tool: satguard.*
 
@@ -11,7 +11,7 @@ corrupted file under realistic link loss. Measured on a flatsat replica, paced t
 ## What we found
 
 Under injected packet loss at rates spanning plausible UHF link conditions (1-30%), paced to the
-real 9.6 kbit/s uplink rate, the deployed upload path delivered a file that was the **right size but
+real ~4800 bit/s UHF uplink rate, the deployed upload path delivered a file that was the **right size but
 the wrong bytes**, and the client logged success every time.
 Nothing in the flight or ground software flagged it. The only thing that caught it was an
 external checksum that the upload path itself never runs.
@@ -61,7 +61,7 @@ is not knowing you need it.
 ## How this was measured (so you can trust it)
 
 - Deterministic, CSP-aware packet loss injected per fragment at swept rates (1/5/10/20/30%).
-- Traffic paced to the real 9.6 kbit/s UHF uplink rate.
+- Traffic paced to the real 4800 bit/s UHF uplink rate (confirmed by DISCO-2 flight telemetry: rx_baud/tx_baud = 4800 bps).
 - Delivery verified by an independent SHA-256 oracle against the original file.
 - Zero-loss control run alongside every sweep to prove corruption is loss-caused.
 - Run on a flatsat hardware replica (disclosed: ground replica, not the on-orbit unit).

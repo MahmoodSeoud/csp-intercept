@@ -69,7 +69,7 @@ $CSH -i $REPO/csh/demo/rawdtp-resume.csh      # SAME cwd ($WORK)
 ```
 
 Injector args: `<ingress zmq...,rcvaddr=16> <egress can:can0> 8 256 4 <loss> 4 <seed> <droplog.csv> 5424 <pace_us>`.
-`pace_us=0` = line rate. Use a real value (213333 for 9.6 kbit/s at MTU 256) to pace.
+`pace_us=0` = line rate. Use a real value (426667 for 4800 bit/s at MTU 256) to pace.
 
 ### The payoff: when dtp_info finally says `Missing: 0`
 That is the transfer reporting itself COMPLETE. Now check the bytes it actually wrote:

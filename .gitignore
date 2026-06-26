@@ -44,6 +44,9 @@ captures/*
 # stray VM memory dumps (flatsat sim scratch; not part of the instrument)
 *.vmem
 
+# scratch from unzipping mission .ods/.xlsx during research (not part of the repo)
+.tmp_extract/
+
 # python tooling (scripts/)
 __pycache__/
 *.pyc

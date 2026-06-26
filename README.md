@@ -10,7 +10,8 @@ the software claims. It exists to answer one question that mission software hide
 
 CSP = CubeSat Space Protocol (`libcsp`). DTP = a bulk-transfer library on top of CSP
 (`libdtp`). CSH = the CSP shell used to drive transfers. The lab CAN bus stands in for the
-9.6 kbit/s UHF radio.
+UHF radio: 4800 bit/s (confirmed by DISCO-2 flight telemetry), GMSK with Reed-Solomon(223,255)
+FEC; operators throttle DTP to ~1 KB/s.
 
 ---
 
@@ -120,7 +121,7 @@ scripts/satdeploy-sweep smart
 scripts/rawdtp-sweep
 ```
 
-Each paced pass is ~4 min (9.6 kbit/s, 1041 fragments); a full sweep is 1–3 h. See the
+Each paced pass is ~7 min (4800 bit/s net, 1041 fragments); a full sweep is 1–3 h. See the
 operational notes in [docs/HOWTO.md](docs/HOWTO.md) and `HANDOFF.md` before running live.
 
 ### 3. Read the result
