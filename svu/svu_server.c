@@ -161,7 +161,10 @@ int main(int argc, char **argv)
         csp_buffer_free(pkt);
 
         uint32_t mtu = (req.mtu > SVU_DATA_HDR) ? req.mtu : 256u;
-        uint16_t client_addr = (uint16_t)req.client_addr;
+        /* Learn the client's address from the CONNECTION, not a self-reported field:
+         * robust, and it means the client need not know its own CSP address (the APM
+         * client doesn't). Captured before csp_close below. */
+        uint16_t client_addr = (uint16_t)csp_conn_src(conn);
 
         /* meta response header + manifest, over the reliable conn */
         csp_packet_t *resp = csp_buffer_get(0);
