@@ -96,5 +96,6 @@ if get_option('frontends')
   subdir('proxy')
   subdir('apm')
   subdir('inject')
+  subdir('svu')
   subdir('tests/e2e')
 endif
