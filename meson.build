@@ -71,6 +71,15 @@ ge_host = executable('ge_host', 'tests/ge_host.c',
   override_options: ci_strict)
 test('gilbert-elliott burst-loss generator', ge_host)
 
+# SVU resume loop: end-to-end proof that sender-manifest + burst-loss/corrupting
+# channel + verified-completion receiver converges to a block-verified file (bytes
+# == source), re-requesting only the bad ranges. Uses ci_ge (needs -lm), so it sits
+# in the ge_deps block.
+svu_loop_host = executable('svu_loop_host', 'tests/svu_loop_host.c',
+  dependencies: ge_deps,
+  override_options: ci_strict)
+test('self-verifying uploader resume loop', svu_loop_host)
+
 # Front-ends: the vendored lossy proxy and the monitor APM. Gated behind the
 # `frontends` option so the pure lib above stays buildable with zero dependencies.
 #

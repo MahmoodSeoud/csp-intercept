@@ -129,6 +129,11 @@ uint32_t ci_svu_covered(const ci_svu_t *s)
     return (s == NULL) ? 0u : s->covered_count;
 }
 
+const uint8_t *ci_svu_data(const ci_svu_t *s)
+{
+    return (s == NULL) ? NULL : s->data;
+}
+
 /* Append interval [start,end) to out[] if room; always advance *nout logically. */
 static void push_interval(ci_svu_interval_t *out, uint32_t max, uint32_t *nout,
                           uint32_t start, uint32_t end)

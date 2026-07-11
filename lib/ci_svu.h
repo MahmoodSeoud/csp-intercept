@@ -89,4 +89,13 @@ uint32_t ci_svu_covered(const ci_svu_t *s);
 ci_svu_status_t ci_svu_verify(ci_svu_t *s, ci_svu_interval_t *out,
                               uint32_t max, uint32_t *nout);
 
+/*
+ * The reassembled payload bytes (total_size long, owned by `s`). Only trustworthy
+ * once ci_svu_verify() has returned COMPLETE_VERIFIED; before that the buffer may
+ * still hold zero-holes or corrupt bytes. Returns NULL if `s` is NULL. This is how
+ * a correct uploader hands the finished file to the application -- and the point is
+ * that it only does so after the hash gate, never on a byte-counter.
+ */
+const uint8_t *ci_svu_data(const ci_svu_t *s);
+
 #endif /* CI_SVU_H */
