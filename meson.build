@@ -36,7 +36,7 @@ ci_strict = ['c_std=c11', 'warning_level=2', 'werror=true']
 # the parse/rule/measurement layer, so it is trivially unit-testable.
 ci_inc = include_directories('lib')
 ci_lib = static_library('ci',
-  ['lib/ci_rdp.c', 'lib/ci_dtp.c', 'lib/ci_rule.c', 'lib/ci_meas.c', 'lib/ci_ge.c', 'lib/ci_sha256.c'],
+  ['lib/ci_rdp.c', 'lib/ci_dtp.c', 'lib/ci_rule.c', 'lib/ci_meas.c', 'lib/ci_ge.c', 'lib/ci_sha256.c', 'lib/ci_svu.c'],
   include_directories: ci_inc,
   override_options: ci_strict,
   install: false)
@@ -48,6 +48,14 @@ test_lib = executable('test_lib', 'tests/test_lib.c',
   dependencies: ci_dep,
   override_options: ci_strict)
 test('lib unit tests', test_lib)
+
+# Self-Verifying Uploader core: proves the block-integrity + verified-completion
+# tracker reports CORRUPT (with the exact re-request interval) exactly where the
+# old DTP byte-counter would say "delivered". Pure lib, no frontends needed.
+ci_svu_test = executable('ci_svu_test', 'tests/ci_svu_test.c',
+  dependencies: ci_dep,
+  override_options: ci_strict)
+test('self-verifying uploader core', ci_svu_test)
 
 # Gilbert-Elliott burst-loss generator (T3): marginal loss + mean burst length
 # track the target, deterministic per seed, and the generated vector drives the
