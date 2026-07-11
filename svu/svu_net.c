@@ -11,8 +11,6 @@
 #include <csp/csp_debug.h>
 #include <csp/drivers/can_socketcan.h>
 
-#define SVU_CAN_BITRATE 1000000
-
 static void *task_router(void *param)
 {
     (void)param;
@@ -22,13 +20,15 @@ static void *task_router(void *param)
     return NULL;
 }
 
-int svu_net_init(const char *can_dev, uint16_t addr)
+int svu_net_init(const char *can_dev, uint16_t addr, int bitrate)
 {
     csp_init();
 
+    /* bitrate <= 0 -> pass 0 so libcsp leaves the (already-up) interface alone. */
+    int br = (bitrate > 0) ? bitrate : 0;
     csp_iface_t *iface = NULL;
     int err = csp_can_socketcan_open_and_add_interface(
-        can_dev, CSP_IF_CAN_DEFAULT_NAME, addr, SVU_CAN_BITRATE, true, &iface);
+        can_dev, CSP_IF_CAN_DEFAULT_NAME, addr, br, true, &iface);
     if (err != CSP_ERR_NONE || iface == NULL) {
         csp_print("svu: failed to add CAN interface [%s], error %d\n", can_dev, err);
         return -1;

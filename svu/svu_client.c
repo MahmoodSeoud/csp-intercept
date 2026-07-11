@@ -47,8 +47,11 @@ static int ctrl_exchange(uint16_t server_addr, const svu_req_t *req,
     uint8_t buf[SVU_REQ_HDR + (SVU_MAX_INTERVALS * 8u)];
     size_t nbytes = svu_req_encode(req, buf);
 
+    /* Plain CSP connection (no RDP handshake): the first packet we send opens the
+     * connection on the server's csp_accept. CRC32 still guards the small control
+     * messages. Bulk data stays fire-and-forget on the data port. */
     csp_conn_t *conn = csp_connect(CSP_PRIO_NORM, server_addr, SVU_CTRL_PORT,
-                                   10000, CSP_O_RDP | CSP_O_CRC32);
+                                   10000, CSP_O_CRC32);
     if (conn == NULL) {
         return -1;
     }
@@ -116,9 +119,10 @@ int main(int argc, char **argv)
     uint32_t mtu = 256u;
     uint32_t block_size = 4096u;
     uint32_t max_rounds = 500u;
+    int bitrate = 0; /* 0 = do NOT reconfigure a live bus (default, safe) */
 
     int opt;
-    while ((opt = getopt(argc, argv, "c:a:C:o:m:b:h")) != -1) {
+    while ((opt = getopt(argc, argv, "c:a:C:o:m:b:B:h")) != -1) {
         switch (opt) {
         case 'c': can_dev = optarg; break;
         case 'a': addr = (uint16_t)atoi(optarg); break;
@@ -126,19 +130,26 @@ int main(int argc, char **argv)
         case 'o': outfile = optarg; break;
         case 'm': mtu = (uint32_t)strtoul(optarg, NULL, 10); break;
         case 'b': block_size = (uint32_t)strtoul(optarg, NULL, 10); break;
+        case 'B': bitrate = atoi(optarg); break;
         case 'h':
         default:
             printf("usage: %s -C <server> [-c can0] [-a addr] [-o out] "
-                   "[-m mtu] [-b block]\n", argv[0]);
+                   "[-m mtu] [-b block] [-B bitrate(0=leave bus as-is)]\n", argv[0]);
             return (opt == 'h') ? 0 : 1;
         }
     }
 
-    if (svu_net_init(can_dev, addr) != 0) {
+    if (svu_net_init(can_dev, addr, bitrate) != 0) {
         return 1;
     }
+    /* Connectionless RX socket for the fire-and-forget data blast. CSP requires
+     * CSP_SO_CONN_LESS *and* csp_listen() (which allocates the rx_queue -- csp_bind
+     * alone does not). Without both, data packets fall into the connection path and
+     * the router dereferences a NULL queue. */
     csp_socket_t data_sock = {0};
+    data_sock.opts = CSP_SO_CONN_LESS;
     csp_bind(&data_sock, SVU_DATA_PORT);
+    csp_listen(&data_sock, 10);
 
     ci_svu_t *recv = NULL;
     uint32_t total = 0u, block = 0u, nblocks = 0u;

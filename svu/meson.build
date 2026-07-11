@@ -14,14 +14,18 @@ svu_net_lib = static_library('svu_net', 'svu_net.c',
   include_directories: svu_local_inc,
   override_options: svu_opts)
 
-executable('svu_server', 'svu_server.c',
+# svu_debug.c is compiled DIRECTLY into each executable (not via the static lib) so
+# its strong csp_input_hook/csp_output_hook override libcsp's weak defaults -- a
+# static-archive member is only pulled in to resolve an undefined symbol, and the
+# weak hooks are already "defined", so an archived override would be silently dropped.
+executable('svu_server', ['svu_server.c', 'svu_debug.c'],
   link_with: svu_net_lib,
   dependencies: [svu_csp_dep, threads_dep, ci_dep],
   include_directories: [svu_local_inc, ci_inc],
   override_options: svu_opts,
   install: false)
 
-executable('svu_client', 'svu_client.c',
+executable('svu_client', ['svu_client.c', 'svu_debug.c'],
   link_with: svu_net_lib,
   dependencies: [svu_csp_dep, threads_dep, ci_dep],
   include_directories: [svu_local_inc, ci_inc],

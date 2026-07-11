@@ -97,17 +97,20 @@ int main(int argc, char **argv)
     const char *file = NULL;
     uint16_t addr = 5;
     uint32_t block_size = 4096u;
+    int bitrate = 0; /* 0 = do NOT reconfigure a live bus (default, safe) */
 
     int opt;
-    while ((opt = getopt(argc, argv, "c:a:f:b:h")) != -1) {
+    while ((opt = getopt(argc, argv, "c:a:f:b:B:h")) != -1) {
         switch (opt) {
         case 'c': can_dev = optarg; break;
         case 'a': addr = (uint16_t)atoi(optarg); break;
         case 'f': file = optarg; break;
         case 'b': block_size = (uint32_t)strtoul(optarg, NULL, 10); break;
+        case 'B': bitrate = atoi(optarg); break;
         case 'h':
         default:
-            printf("usage: %s -f <file> [-c can0] [-a addr] [-b block_size]\n", argv[0]);
+            printf("usage: %s -f <file> [-c can0] [-a addr] [-b block_size] "
+                   "[-B bitrate(0=leave bus as-is)]\n", argv[0]);
             return (opt == 'h') ? 0 : 1;
         }
     }
@@ -129,7 +132,7 @@ int main(int argc, char **argv)
     }
     ci_svu_manifest(src, total, block_size, manifest);
 
-    if (svu_net_init(can_dev, addr) != 0) {
+    if (svu_net_init(can_dev, addr, bitrate) != 0) {
         return 1;
     }
     csp_print("svu-server: serving '%s' (%u bytes, %u blocks) on node %u\n",
