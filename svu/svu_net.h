@@ -23,4 +23,17 @@
  */
 int svu_net_init(const char *can_dev, uint16_t addr, int bitrate);
 
+/*
+ * Initialize CSP over a ZeroMQ interface instead of CAN, connecting to a running
+ * zmqproxy broker at `host` (publish -> broker sub port 6000, subscribe -> broker
+ * pub port 7000, matching upload_gs-server -z and the injector's zmq side), with
+ * local address `addr`. Returns 0 on success, -1 on failure.
+ *
+ * This exists ONLY so the server can sit behind the zmq<->can loss injector
+ * (ci_inject_bridge) for measurement runs: the injector drops the server's data
+ * packets on their way from the broker to can0. SVU is transport-agnostic CSP, so
+ * this changes nothing about the protocol -- it is the harness link, not the artifact.
+ */
+int svu_net_init_zmq(const char *host, uint16_t addr);
+
 #endif /* SVU_NET_H */

@@ -5,12 +5,15 @@
 # lib they depend on stays strict.
 threads_dep = dependency('threads')
 svu_csp_dep = dependency('csp', fallback: ['csp', 'csp_dep'], required: true)
+# libzmq: svu_net's -z path uses csp_zmqhub so the server can sit behind the loss
+# injector. Only needed at link time for that symbol; CAN-only use never calls it.
+svu_zmq_dep = dependency('libzmq', required: true)
 
 svu_opts = ['c_std=gnu11', 'warning_level=2']
 svu_local_inc = include_directories('.')
 
 svu_net_lib = static_library('svu_net', 'svu_net.c',
-  dependencies: [svu_csp_dep, threads_dep],
+  dependencies: [svu_csp_dep, threads_dep, svu_zmq_dep],
   include_directories: svu_local_inc,
   override_options: svu_opts)
 
@@ -27,14 +30,14 @@ svu_session_lib = static_library('svu_session', 'svu_session.c',
 # weak hooks are already "defined", so an archived override would be silently dropped.
 executable('svu_server', ['svu_server.c', 'svu_debug.c'],
   link_with: svu_net_lib,
-  dependencies: [svu_csp_dep, threads_dep, ci_dep],
+  dependencies: [svu_csp_dep, threads_dep, ci_dep, svu_zmq_dep],
   include_directories: [svu_local_inc, ci_inc],
   override_options: svu_opts,
   install: false)
 
 executable('svu_client', ['svu_client.c', 'svu_debug.c'],
   link_with: [svu_net_lib, svu_session_lib],
-  dependencies: [svu_csp_dep, threads_dep, ci_dep],
+  dependencies: [svu_csp_dep, threads_dep, ci_dep, svu_zmq_dep],
   include_directories: [svu_local_inc, ci_inc],
   override_options: svu_opts,
   install: false)

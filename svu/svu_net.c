@@ -7,9 +7,12 @@
 
 #include <pthread.h>
 
+#include <stdio.h>
+
 #include <csp/csp.h>
 #include <csp/csp_debug.h>
 #include <csp/drivers/can_socketcan.h>
+#include <csp/interfaces/csp_if_zmqhub.h>
 
 static void *task_router(void *param)
 {
@@ -20,19 +23,10 @@ static void *task_router(void *param)
     return NULL;
 }
 
-int svu_net_init(const char *can_dev, uint16_t addr, int bitrate)
+/* Mark the interface default and spawn the detached router thread. Shared by both
+ * the CAN and ZMQ bring-up paths. Returns 0 on success, -1 on failure. */
+static int start_router(csp_iface_t *iface)
 {
-    csp_init();
-
-    /* bitrate <= 0 -> pass 0 so libcsp leaves the (already-up) interface alone. */
-    int br = (bitrate > 0) ? bitrate : 0;
-    csp_iface_t *iface = NULL;
-    int err = csp_can_socketcan_open_and_add_interface(
-        can_dev, CSP_IF_CAN_DEFAULT_NAME, addr, br, true, &iface);
-    if (err != CSP_ERR_NONE || iface == NULL) {
-        csp_print("svu: failed to add CAN interface [%s], error %d\n", can_dev, err);
-        return -1;
-    }
     iface->is_default = 1;
 
     pthread_attr_t attr;
@@ -48,4 +42,40 @@ int svu_net_init(const char *can_dev, uint16_t addr, int bitrate)
         return -1;
     }
     return 0;
+}
+
+int svu_net_init(const char *can_dev, uint16_t addr, int bitrate)
+{
+    csp_init();
+
+    /* bitrate <= 0 -> pass 0 so libcsp leaves the (already-up) interface alone. */
+    int br = (bitrate > 0) ? bitrate : 0;
+    csp_iface_t *iface = NULL;
+    int err = csp_can_socketcan_open_and_add_interface(
+        can_dev, CSP_IF_CAN_DEFAULT_NAME, addr, br, true, &iface);
+    if (err != CSP_ERR_NONE || iface == NULL) {
+        csp_print("svu: failed to add CAN interface [%s], error %d\n", can_dev, err);
+        return -1;
+    }
+    return start_router(iface);
+}
+
+int svu_net_init_zmq(const char *host, uint16_t addr)
+{
+    csp_init();
+
+    /* publish (tx) -> broker subscribe port 6000; subscribe (rx) -> broker publish
+     * port 7000. Same convention as upload_gs-server -z and the injector's zmq side. */
+    char pub_ep[64];
+    char sub_ep[64];
+    snprintf(pub_ep, sizeof(pub_ep), "tcp://%s:6000", host);
+    snprintf(sub_ep, sizeof(sub_ep), "tcp://%s:7000", host);
+
+    csp_iface_t *iface = NULL;
+    int err = csp_zmqhub_init_w_endpoints(addr, pub_ep, sub_ep, 0, &iface);
+    if (err != CSP_ERR_NONE || iface == NULL) {
+        csp_print("svu: failed to add ZMQ interface [%s], error %d\n", host, err);
+        return -1;
+    }
+    return start_router(iface);
 }

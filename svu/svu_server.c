@@ -94,23 +94,28 @@ static void blast_interval(uint16_t client_addr, uint32_t session, uint32_t mtu,
 int main(int argc, char **argv)
 {
     const char *can_dev = "can0";
+    const char *zmq_host = NULL; /* -z <host>: use zmq broker instead of CAN */
     const char *file = NULL;
     uint16_t addr = 5;
     uint32_t block_size = 4096u;
     int bitrate = 0; /* 0 = do NOT reconfigure a live bus (default, safe) */
 
     int opt;
-    while ((opt = getopt(argc, argv, "c:a:f:b:B:h")) != -1) {
+    while ((opt = getopt(argc, argv, "c:z:a:f:b:B:h")) != -1) {
         switch (opt) {
         case 'c': can_dev = optarg; break;
+        case 'z': zmq_host = optarg; break;
         case 'a': addr = (uint16_t)atoi(optarg); break;
         case 'f': file = optarg; break;
         case 'b': block_size = (uint32_t)strtoul(optarg, NULL, 10); break;
         case 'B': bitrate = atoi(optarg); break;
         case 'h':
         default:
-            printf("usage: %s -f <file> [-c can0] [-a addr] [-b block_size] "
-                   "[-B bitrate(0=leave bus as-is)]\n", argv[0]);
+            printf("usage: %s -f <file> [-c can0 | -z broker_host] [-a addr] "
+                   "[-b block_size] [-B bitrate(0=leave bus as-is)]\n"
+                   "  -c <dev>   join a SocketCAN bus (default: can0)\n"
+                   "  -z <host>  join a zmqproxy broker at <host> instead (for the\n"
+                   "             loss injector: publish->6000, subscribe->7000)\n", argv[0]);
             return (opt == 'h') ? 0 : 1;
         }
     }
@@ -132,11 +137,15 @@ int main(int argc, char **argv)
     }
     ci_svu_manifest(src, total, block_size, manifest);
 
-    if (svu_net_init(can_dev, addr, bitrate) != 0) {
+    int net_err = (zmq_host != NULL)
+                      ? svu_net_init_zmq(zmq_host, addr)
+                      : svu_net_init(can_dev, addr, bitrate);
+    if (net_err != 0) {
         return 1;
     }
-    csp_print("svu-server: serving '%s' (%u bytes, %u blocks) on node %u\n",
-              file, total, nblocks, addr);
+    csp_print("svu-server: serving '%s' (%u bytes, %u blocks) on node %u via %s\n",
+              file, total, nblocks, addr,
+              (zmq_host != NULL) ? zmq_host : can_dev);
 
     csp_socket_t ctrl = {0};
     csp_bind(&ctrl, SVU_CTRL_PORT);

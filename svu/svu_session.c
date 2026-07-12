@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <csp/csp.h>
 #include <csp/csp_debug.h>
@@ -134,8 +135,20 @@ int svu_client_run(uint16_t server_addr, uint32_t block_size, uint32_t mtu,
 
         uint8_t *manifest = NULL;
         uint32_t t2 = 0u, b2 = 0u, nb2 = 0u;
-        if (ctrl_exchange(server_addr, &req, &t2, &b2, &nb2, &manifest) != 0) {
-            csp_print("svu: ctrl exchange failed (round %u)\n", round);
+        /* The control channel is a plain CSP conn (no RDP), so a single dropped or
+         * late control packet would otherwise abort the whole transfer. Retry a few
+         * times: covers a lossy link's control-packet loss and a fresh ZMQ link's
+         * slow-joiner (SUB/PUB not yet connected on the first send). */
+        int ctrl_ok = -1;
+        for (int attempt = 0; attempt < 8; attempt++) {
+            ctrl_ok = ctrl_exchange(server_addr, &req, &t2, &b2, &nb2, &manifest);
+            if (ctrl_ok == 0) {
+                break;
+            }
+            usleep(500000); /* 500 ms between attempts */
+        }
+        if (ctrl_ok != 0) {
+            csp_print("svu: ctrl exchange failed after retries (round %u)\n", round);
             ci_svu_free(recv);
             return -1;
         }
