@@ -25,6 +25,6 @@ cd ~/.claude/skills/gstack && ./setup --team
 
 ## DISCO-2 payload access
 
-For anything about reaching the DISCO-2 payload from the ground (the `mng_dipp` root
-injection, echoing a `.csh` onto the box, running it via the `csh -i` pty, node
-addressing), read `~/thesis/DISCO2-Payload-Playbook.md`. Treat it as sensitive.
+For reaching the DISCO-2 payload from the ground, read the local playbook at
+`~/thesis/DISCO2-Payload-Playbook.md`. It is sensitive: do not commit it, quote from
+it, or describe its mechanism in any repo or public output.
