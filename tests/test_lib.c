@@ -286,6 +286,46 @@ static void test_seq_tracker(void) {
     ci_seq_tracker_feed(&t, 0x0001);
     CHECK(ci_seq_tracker_loss(&t) == 0, "seq: wrap 0xFFFE..0x0001 -> loss 0");
     CHECK(t.epoch == 1, "seq: epoch incremented across wrap");
+
+    /* loss-trust guard: dense captures trusted, sparse/phantom captures rejected */
+    ci_seq_tracker_t lt;
+
+    /* dense contiguous 0..99 -> trustworthy */
+    ci_seq_tracker_init(&lt);
+    for (uint16_t s = 0; s < 100; s++) {
+        ci_seq_tracker_feed(&lt, s);
+    }
+    CHECK(ci_loss_trustworthy(&lt) == 1, "loss-trust: dense 0..99 trustworthy");
+
+    /* 30% loss but densely sampled (7 of every 10 over a 1000 span) -> trustworthy:
+     * the guard must NOT flag real sweep-regime loss. */
+    ci_seq_tracker_init(&lt);
+    for (uint16_t s = 0; s < 1000; s++) {
+        if (s % 10 < 7) {
+            ci_seq_tracker_feed(&lt, s);
+        }
+    }
+    CHECK(ci_loss_trustworthy(&lt) == 1, "loss-trust: 30%% loss dense still trustworthy");
+
+    /* the phantom: 5 seqs across a ~16k span -> huge (span-distinct) loss, rejected */
+    ci_seq_tracker_init(&lt);
+    ci_seq_tracker_feed(&lt, 100);
+    ci_seq_tracker_feed(&lt, 4000);
+    ci_seq_tracker_feed(&lt, 8000);
+    ci_seq_tracker_feed(&lt, 12000);
+    ci_seq_tracker_feed(&lt, 16000);
+    CHECK(ci_seq_tracker_loss(&lt) > 15000, "loss-trust: sparse span yields huge phantom loss");
+    CHECK(ci_loss_trustworthy(&lt) == 0, "loss-trust: 5-of-16000 sparse rejected");
+
+    /* small span (below CI_LOSS_MIN_SPAN) -> not judged -> trustworthy */
+    ci_seq_tracker_init(&lt);
+    ci_seq_tracker_feed(&lt, 0);
+    ci_seq_tracker_feed(&lt, 10);
+    CHECK(ci_loss_trustworthy(&lt) == 1, "loss-trust: small span not judged");
+
+    /* empty tracker -> no claim -> trustworthy */
+    ci_seq_tracker_init(&lt);
+    CHECK(ci_loss_trustworthy(&lt) == 1, "loss-trust: empty tracker trustworthy");
 }
 
 /* ---- measurement math: observed-at-tap RTT pairing ---- */

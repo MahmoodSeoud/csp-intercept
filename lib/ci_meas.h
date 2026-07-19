@@ -49,6 +49,28 @@ int      ci_seq_tracker_feed(ci_seq_tracker_t *t, uint16_t seq);
 uint64_t ci_seq_tracker_loss(const ci_seq_tracker_t *t);
 
 /* ------------------------------------------------------------------------- *
+ * Loss-trust guard: (span - distinct) is only meaningful as LINK loss when the
+ * capture densely sampled a single contiguous stream. A sparse capture (saw far
+ * fewer distinct seqs than the seq range spans) or one that mixes several RDP
+ * connections (each with its own random initial seq) inflates `span` without any
+ * real drop, so the loss reads as a huge PHANTOM. This guard flags that case so
+ * the monitor never presents a phantom loss number as trustworthy.
+ *
+ * Threshold: trustworthy iff distinct >= span / CI_LOSS_DENSITY_DIV, i.e. we saw
+ * at least 1/DIV of the spanned slots. With DIV=8 it only trips below 12.5%
+ * capture density (>87.5% apparent loss) -- far outside the <=30% loss the
+ * experiments sweep -- so it flags MIS-CAPTURE (partial / multi-connection),
+ * never a real high-loss measurement.
+ * ------------------------------------------------------------------------- */
+#define CI_LOSS_MIN_SPAN     64   /* below this span, don't judge (tiny capture) */
+#define CI_LOSS_DENSITY_DIV  8    /* trustworthy iff distinct*DIV >= span         */
+
+/* Return 1 if this tracker's inferred loss is trustworthy as link loss, 0 if the
+ * capture is too sparse / multi-connection for (span - distinct) to mean physical
+ * loss. An empty or small-span tracker is trustworthy (it makes no loss claim). */
+int ci_loss_trustworthy(const ci_seq_tracker_t *t);
+
+/* ------------------------------------------------------------------------- *
  * Observed-at-tap RTT pairing: match a data packet's seq to the ACK whose
  * ack_nr names it, returning the at-tap interval. Bounded ring (oldest dropped).
  * This is the SYN->SYN-ACK / data->ACK interval AS SEEN AT THE TAP, not the true
@@ -83,6 +105,9 @@ int  ci_rtt_on_ack(ci_rtt_pairing_t *p, uint16_t ack_nr, uint32_t t_ms,
 #define CI_SUSPECT_CONN_OVF   0x01
 #define CI_SUSPECT_BUFFER_OUT 0x02
 #define CI_SUSPECT_BUFFER_LOW 0x04
+/* Not an instrument-loss path: set by the APM when ci_loss_trustworthy() rejects
+ * the window's loss estimate (sparse / multi-connection capture, see above). */
+#define CI_SUSPECT_SPARSE_SEQ 0x08
 
 typedef struct {
     uint8_t conn_ovf_delta;    /* csp_dbg_conn_ovf delta over the window   */

@@ -57,6 +57,24 @@ static int     mon_buffer_low_water = 100;
 /* drainer-thread-only measurement state */
 static ci_seq_tracker_t mon_seq;
 static ci_rtt_pairing_t mon_rtt;
+/* Count of windows whose inferred_loss was rejected by the loss-trust guard.
+ * Written only by the drainer; read by stop AFTER pthread_join (no race). */
+static uint64_t mon_loss_suspect_windows;
+
+/* vmem upload rides its own RDP port (VMEM_PORT_SERVER in param's
+ * vmem/vmem_server.h); named here so the start banner can gloss -d 14. */
+#define CI_VMEM_UPLOAD_PORT 14
+
+/* Human label for the matched dport, so a first-time operator sees WHAT they are
+ * watching instead of a bare number (the port mismatch that silently logs zero). */
+static const char *mon_dport_label(int dport) {
+    switch (dport) {
+        case CI_DTP_DATA_PORT:    return "DTP data (deployed uploader, no integrity)";
+        case CI_DIPP_META_PORT:   return "DIPP / RDP meta";
+        case CI_VMEM_UPLOAD_PORT: return "vmem RDP+CRC32 upload (csh `upload`)";
+        default:                  return dport < 0 ? "ANY dport" : "custom port";
+    }
+}
 
 static void mon_write_header(void) {
     fprintf(mon_csv,
@@ -71,6 +89,7 @@ static void *mon_drainer(void *arg) {
     (void)arg;
     ci_seq_tracker_init(&mon_seq);
     ci_rtt_init(&mon_rtt);
+    mon_loss_suspect_windows = 0;
 
     uint8_t  prev_ovf  = csp_dbg_conn_ovf;
     uint8_t  prev_bout = csp_dbg_buffer_out;
@@ -128,6 +147,14 @@ static void *mon_drainer(void *arg) {
             hw.buffer_low_water = mon_buffer_low_water;
             uint32_t flags = 0;
             int suspect = ci_measurement_suspect(&hw, &flags);
+            /* Loss-trust guard: a sparse / multi-connection capture makes
+             * (span - distinct) a phantom. Flag it so the row never presents a
+             * phantom loss as trustworthy, and count it for the stop warning. */
+            if (!ci_loss_trustworthy(&mon_seq)) {
+                flags |= CI_SUSPECT_SPARSE_SEQ;
+                suspect = 1;
+                mon_loss_suspect_windows++;
+            }
             fprintf(mon_csv, "#WINDOW,%u,%u,%u,%d,%llu,%llu,%llu,%d,0x%X\n",
                     now, hw.conn_ovf_delta, hw.buffer_out_delta, hw.buffer_remaining,
                     (unsigned long long)ci_seq_tracker_loss(&mon_seq),
@@ -218,10 +245,12 @@ static int csp_monitor_start_cmd(struct slash *slash) {
         printf("csp_monitor: failed to start drainer thread\n");
         return SLASH_ENOMEM;
     }
-    printf("csp_monitor: started -> %s (dport=%d, window=%ums, mtu=%u, dtp_overhead=%u%s)\n",
-           mon_csv_path, mon_match_dport, mon_window_ms, mon_mtu, mon_dtp_overhead,
+    printf("csp_monitor: started -> %s (dport=%d [%s], window=%ums, mtu=%u, dtp_overhead=%u%s)\n",
+           mon_csv_path, mon_match_dport, mon_dport_label(mon_match_dport),
+           mon_window_ms, mon_mtu, mon_dtp_overhead,
            mon_dtp_overhead == CI_DTP_OVERHEAD_SATDEPLOY ? " satDeploy" :
            mon_dtp_overhead == CI_DTP_OVERHEAD_DIPP ? " dipp" : "");
+    printf("csp_monitor: port map -> 8=DTP data, 13=DIPP/RDP meta, 14=vmem upload; -d -1 = any\n");
     return SLASH_SUCCESS;
 }
 slash_command_sub(csp_monitor, start, csp_monitor_start_cmd,
@@ -261,6 +290,14 @@ static int csp_monitor_stop_cmd(struct slash *slash) {
         fflush(mon_csv);
         fclose(mon_csv);
         mon_csv = NULL;
+    }
+    if (mon_loss_suspect_windows > 0) {
+        printf("csp_monitor: WARNING inferred_loss flagged UNTRUSTWORTHY in %llu window(s).\n"
+               "  The capture was too sparse (saw far fewer packets than the seq range spans),\n"
+               "  which happens on a partial capture or when several RDP connections mix on one\n"
+               "  port. Those rows carry suspect_flags & 0x08 -- treat their inferred_loss as\n"
+               "  UNRELIABLE and trust the CRC32/sha256 integrity oracle, not the packet count.\n",
+               (unsigned long long)mon_loss_suspect_windows);
     }
     printf("csp_monitor: stopped -> %s\n", mon_csv_path);
     return SLASH_SUCCESS;

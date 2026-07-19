@@ -95,6 +95,19 @@ uint64_t ci_seq_tracker_loss(const ci_seq_tracker_t *t) {
     return span > t->n_distinct ? span - t->n_distinct : 0;
 }
 
+int ci_loss_trustworthy(const ci_seq_tracker_t *t) {
+    if (t == NULL || !t->have) {
+        return 1; /* no packets fed -> no loss claim to distrust */
+    }
+    uint64_t span = t->max - t->first + 1;
+    if (span < CI_LOSS_MIN_SPAN) {
+        return 1; /* tiny span -> (span - distinct) is fine as-is */
+    }
+    /* Dense enough? saw >= span/DIV distinct seqs. Cross-multiply so we never
+     * divide (avoids truncation and a div-by-zero on a zero DIV misconfig). */
+    return (t->n_distinct * (uint64_t)CI_LOSS_DENSITY_DIV >= span) ? 1 : 0;
+}
+
 /* ---- RTT pairing -------------------------------------------------------- */
 
 void ci_rtt_init(ci_rtt_pairing_t *p) {
