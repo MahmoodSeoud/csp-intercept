@@ -22,10 +22,13 @@
 /* Service ports MUST be <= the build's csp port_max_bind (16 here); ports above it
  * are CSP's dynamic/ephemeral source-port range (the bench uses 17-24), so binding
  * a service there collides with connection source ports and packets never reach
- * csp_accept. 11/12 are low, bindable, and unused by the DISCO bench (which uses
- * 10 for param, 7/8/13 for DTP). */
+ * csp_accept. Ports must be <= CSP_PORT_MAX_BIND (16 here). Avoid what the DISCO/csh
+ * stack already binds: 0-6 (CSP services), 7/8/13 (DTP), 10 (PARAM_PORT_SERVER),
+ * 12 (PARAM_PORT_LIST -- csh's vmem_server binds it, so a data socket there returns
+ * CSP_ERR_USED and the blast is swallowed), 14 (vmem). 11 (ctrl) and 9 (data) are
+ * free, low, and bindable in a live csh. */
 #define SVU_CTRL_PORT   11u    /* meta handshake                          */
-#define SVU_DATA_PORT   12u    /* connectionless bulk data                */
+#define SVU_DATA_PORT    9u    /* connectionless bulk data                */
 #define SVU_DATA_HDR     8u    /* [u32 offset][u32 session_id]            */
 #define SVU_MAGIC_REQ   0x51555653u /* "SVUQ" */
 #define SVU_MAGIC_RESP  0x52555653u /* "SVUR" */
