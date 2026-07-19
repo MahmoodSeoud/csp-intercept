@@ -251,6 +251,11 @@ static int csp_monitor_start_cmd(struct slash *slash) {
            mon_dtp_overhead == CI_DTP_OVERHEAD_SATDEPLOY ? " satDeploy" :
            mon_dtp_overhead == CI_DTP_OVERHEAD_DIPP ? " dipp" : "");
     printf("csp_monitor: port map -> 8=DTP data, 13=DIPP/RDP meta, 14=vmem upload; -d -1 = any\n");
+    if (mon_match_dport < 0) {
+        printf("csp_monitor: note -d -1 captures ALL ports, so inferred_loss mixes connections\n"
+               "  and will read as untrustworthy on a busy bus. Match ONE port (e.g. -d 14) for a\n"
+               "  loss measurement; for 'did it arrive intact?' use `verify -c <manifest> <file>`.\n");
+    }
     return SLASH_SUCCESS;
 }
 slash_command_sub(csp_monitor, start, csp_monitor_start_cmd,
@@ -296,7 +301,9 @@ static int csp_monitor_stop_cmd(struct slash *slash) {
                "  The capture was too sparse (saw far fewer packets than the seq range spans),\n"
                "  which happens on a partial capture or when several RDP connections mix on one\n"
                "  port. Those rows carry suspect_flags & 0x08 -- treat their inferred_loss as\n"
-               "  UNRELIABLE and trust the CRC32/sha256 integrity oracle, not the packet count.\n",
+               "  UNRELIABLE and trust the CRC32/sha256 integrity oracle, not the packet count.\n"
+               "  Likely fix: match a SINGLE port with -d <PORT> (not -d -1) and capture the\n"
+               "  whole transfer; for 'did it arrive intact?', run `verify -c <manifest> <file>`.\n",
                (unsigned long long)mon_loss_suspect_windows);
     }
     printf("csp_monitor: stopped -> %s\n", mon_csv_path);
