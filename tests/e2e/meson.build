@@ -137,3 +137,11 @@ ci_inject_can = executable('ci_inject_can', 'ci_inject_can.c',
 ci_inject_bridge = executable('ci_inject_bridge', 'ci_inject_bridge.c',
   dependencies: [ci_drop_dep, e2e_zmq, e2e_threads],
   override_options: ['c_std=gnu11', 'werror=false'])
+
+# vmem_node: a minimal CSP node serving a big flat RAM vmem region on a CAN bus, as a
+# clean byte-faithful integrity oracle for the RDP/upload arm (DIPP stora is 10 KB and
+# wedges; a csh instance serves no vmem). Full param dep for vmem_server_loop.
+e2e_param_full = dependency('param', fallback: ['param', 'param_dep'])
+vmem_node = executable('vmem_node', 'vmem_node.c',
+  dependencies: [e2e_csp, e2e_param_full, e2e_threads],
+  override_options: ['c_std=gnu11', 'werror=false'])

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# bringup_vmem_node.sh - start the clean RAM integrity oracle used by the RDP arm.
+#
+# vmem_node serves a 1 MiB flat VMEM_TYPE_RAM region ("bigmem") on can0 at address 5431.
+# It is byte-faithful and cannot overflow/wedge like DIPP's 10 KB file-backed stora, so
+# it is the trustworthy target for RDP/upload integrity tests. Source lives in-project at
+# tests/e2e/vmem_node.c (no vendor/disco edits).
+#
+# Usage:  experiments/bringup_vmem_node.sh [addr]      (default addr 5431)
+set -uo pipefail
+REPO=/home/mseo/thesis/csp-intercept
+ADDR="${1:-5431}"
+BIN="$REPO/build/tests/e2e/vmem_node"
+[ -x "$BIN" ] || { echo "building vmem_node..."; ninja -C "$REPO/build" vmem_node || exit 1; }
+
+if pgrep -f "vmem_node -c can0 -a $ADDR" >/dev/null; then
+  echo "vmem_node already running at $ADDR"; exit 0
+fi
+mkdir -p /tmp/vmemnode
+setsid nohup "$BIN" -c can0 -a "$ADDR" >/tmp/vmemnode/node_${ADDR}.log 2>&1 </dev/null &
+sleep 3
+if pgrep -f "vmem_node -c can0 -a $ADDR" >/dev/null; then
+  echo "vmem_node up at $ADDR (log: /tmp/vmemnode/node_${ADDR}.log)"
+  grep -i 'vmem_node up' /tmp/vmemnode/node_${ADDR}.log 2>/dev/null || true
+else
+  echo "FAILED to start vmem_node — see /tmp/vmemnode/node_${ADDR}.log"; exit 1
+fi
