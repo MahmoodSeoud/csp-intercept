@@ -114,6 +114,7 @@ int svu_client_run(uint16_t server_addr, uint32_t block_size, uint32_t mtu,
     uint32_t total = 0u, block = 0u, nblocks = 0u;
     ci_svu_interval_t ivs[SVU_MAX_INTERVALS];
     uint32_t nreq = 0u; /* 0 on the first round => request the whole file */
+    int result = -1;    /* single cleanup at `done` frees the reusable data socket */
 
     ci_svu_status_t st = CI_SVU_INCOMPLETE;
     uint32_t round = 0u;
@@ -149,8 +150,7 @@ int svu_client_run(uint16_t server_addr, uint32_t block_size, uint32_t mtu,
         }
         if (ctrl_ok != 0) {
             csp_print("svu: ctrl exchange failed after retries (round %u)\n", round);
-            ci_svu_free(recv);
-            return -1;
+            goto done;
         }
         if (recv == NULL) {
             total = t2;
@@ -160,7 +160,7 @@ int svu_client_run(uint16_t server_addr, uint32_t block_size, uint32_t mtu,
             if (recv == NULL) {
                 csp_print("svu: ci_svu_new failed\n");
                 free(manifest);
-                return -1;
+                goto done;
             }
         }
         free(manifest);
@@ -179,19 +179,21 @@ int svu_client_run(uint16_t server_addr, uint32_t block_size, uint32_t mtu,
 
     if (st != CI_SVU_COMPLETE_VERIFIED) {
         csp_print("svu: gave up after %u rounds (status %d)\n", round, st);
-        ci_svu_free(recv);
-        return -1;
+        goto done;
     }
 
     FILE *fp = fopen(outfile, "wb");
     if (fp == NULL) {
         csp_print("svu: cannot open '%s' for writing\n", outfile);
-        ci_svu_free(recv);
-        return -1;
+        goto done;
     }
     fwrite(ci_svu_data(recv), 1, total, fp);
     fclose(fp);
     csp_print("svu: VERIFIED %u bytes in %u round(s) -> %s\n", total, round, outfile);
+    result = 0;
+
+done:
     ci_svu_free(recv);
-    return 0;
+    csp_socket_close(&data_sock); /* free the port so a persistent daemon can reuse it */
+    return result;
 }

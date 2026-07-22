@@ -23,6 +23,15 @@ static void *task_router(void *param)
     return NULL;
 }
 
+/* Make this node answer CSP services (ping, ident, ...) so it behaves like any real
+ * node — `ping <addr>` is the natural liveness check for a persistent svu_daemon.
+ * CSP_ANY is a fallback: connection-oriented binds (SVU ctrl/data/push ports) still
+ * take precedence for their own ports. */
+static void bind_services(void)
+{
+    csp_bind_callback(csp_service_handler, CSP_ANY);
+}
+
 /* Mark the interface default and spawn the detached router thread. Shared by both
  * the CAN and ZMQ bring-up paths. Returns 0 on success, -1 on failure. */
 static int start_router(csp_iface_t *iface)
@@ -47,6 +56,7 @@ static int start_router(csp_iface_t *iface)
 int svu_net_init(const char *can_dev, uint16_t addr, int bitrate)
 {
     csp_init();
+    bind_services();
 
     /* bitrate <= 0 -> pass 0 so libcsp leaves the (already-up) interface alone. */
     int br = (bitrate > 0) ? bitrate : 0;
@@ -63,6 +73,7 @@ int svu_net_init(const char *can_dev, uint16_t addr, int bitrate)
 int svu_net_init_zmq(const char *host, uint16_t addr)
 {
     csp_init();
+    bind_services();
 
     /* publish (tx) -> broker subscribe port 6000; subscribe (rx) -> broker publish
      * port 7000. Same convention as upload_gs-server -z and the injector's zmq side. */

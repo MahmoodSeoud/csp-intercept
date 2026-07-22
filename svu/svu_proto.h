@@ -29,6 +29,7 @@
  * free, low, and bindable in a live csh. */
 #define SVU_CTRL_PORT   11u    /* meta handshake                          */
 #define SVU_DATA_PORT    9u    /* connectionless bulk data                */
+#define SVU_PUSH_PORT   15u    /* daemon announce: source hands over the dest path */
 #define SVU_DATA_HDR     8u    /* [u32 offset][u32 session_id]            */
 #define SVU_MAGIC_REQ   0x51555653u /* "SVUQ" */
 #define SVU_MAGIC_RESP  0x52555653u /* "SVUR" */
@@ -114,6 +115,59 @@ static inline int svu_req_decode(const uint8_t *buf, size_t len, svu_req_t *r)
         r->intervals[i].end = svu_get32(buf + SVU_REQ_HDR + (i * 8u) + 4u);
     }
     return 0;
+}
+
+/* --- push announce framing (the `svu` client -> daemon dest-path handover) --- */
+#define SVU_PUSH_MAGIC 0x53565550u /* [magic][u32 mode][path]; absent = legacy path-only */
+
+/* Encode a push announce into buf. When mode == 0 (no -p) we emit the LEGACY path-only
+ * announce, so a new client still interoperates with an old daemon (and bootstraps the
+ * new daemon onto a board). When mode != 0 (-p) we emit [u32 SVU_PUSH_MAGIC][u32 mode]
+ * [path]; that requires a daemon new enough to decode it. Returns the byte count. */
+static inline size_t svu_announce_encode(uint32_t mode, const char *path,
+                                         uint8_t *buf, size_t bufcap)
+{
+    size_t plen = strlen(path);
+    if (mode == 0u) {
+        if (plen > bufcap) {
+            plen = bufcap;
+        }
+        memcpy(buf, path, plen);
+        return plen;
+    }
+    if (plen + 8u > bufcap) {
+        plen = (bufcap > 8u) ? (bufcap - 8u) : 0u;
+    }
+    svu_put32(buf + 0, SVU_PUSH_MAGIC);
+    svu_put32(buf + 4, mode);
+    memcpy(buf + 8, path, plen);
+    return 8u + plen;
+}
+
+/* Decode a push announce. New format yields the sent mode; a legacy (no-magic)
+ * announce is treated as path-only with mode 0, so an old client still works. */
+static inline void svu_announce_decode(const uint8_t *buf, size_t len,
+                                       uint32_t *mode, char *path, size_t pathcap)
+{
+    const uint8_t *psrc;
+    size_t plen;
+    if (len >= 8u && svu_get32(buf) == SVU_PUSH_MAGIC) {
+        *mode = svu_get32(buf + 4);
+        psrc = buf + 8;
+        plen = len - 8u;
+    } else {
+        *mode = 0u; /* legacy: the whole packet is the path */
+        psrc = buf;
+        plen = len;
+    }
+    if (pathcap == 0u) {
+        return;
+    }
+    if (plen >= pathcap) {
+        plen = pathcap - 1u;
+    }
+    memcpy(path, psrc, plen);
+    path[plen] = '\0';
 }
 
 #endif /* SVU_PROTO_H */

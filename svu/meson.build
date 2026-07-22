@@ -24,12 +24,19 @@ svu_session_lib = static_library('svu_session', 'svu_session.c',
   include_directories: [svu_local_inc, ci_inc],
   override_options: svu_opts)
 
+# The serve loop, likewise decoupled from CSP bring-up so BOTH the standalone
+# svu_server binary and the CSH `svu_put` APM share one implementation.
+svu_serve_lib = static_library('svu_serve', 'svu_serve.c',
+  dependencies: [svu_csp_dep, ci_dep],
+  include_directories: [svu_local_inc, ci_inc],
+  override_options: svu_opts)
+
 # svu_debug.c is compiled DIRECTLY into each executable (not via the static lib) so
 # its strong csp_input_hook/csp_output_hook override libcsp's weak defaults -- a
 # static-archive member is only pulled in to resolve an undefined symbol, and the
 # weak hooks are already "defined", so an archived override would be silently dropped.
 executable('svu_server', ['svu_server.c', 'svu_debug.c'],
-  link_with: svu_net_lib,
+  link_with: [svu_net_lib, svu_serve_lib],
   dependencies: [svu_csp_dep, threads_dep, ci_dep, svu_zmq_dep],
   include_directories: [svu_local_inc, ci_inc],
   override_options: svu_opts,
@@ -37,6 +44,23 @@ executable('svu_server', ['svu_server.c', 'svu_debug.c'],
 
 executable('svu_client', ['svu_client.c', 'svu_debug.c'],
   link_with: [svu_net_lib, svu_session_lib],
+  dependencies: [svu_csp_dep, threads_dep, ci_dep, svu_zmq_dep],
+  include_directories: [svu_local_inc, ci_inc],
+  override_options: svu_opts,
+  install: false)
+
+# The scp-like uploader: a persistent receiver daemon on the destination node, and a
+# one-command push client. The daemon pulls+verifies (svu_session); the client serves
+# the file (svu_serve) and hands over the dest path.
+executable('svu_daemon', 'svu_daemon.c',
+  link_with: [svu_net_lib, svu_session_lib],
+  dependencies: [svu_csp_dep, threads_dep, ci_dep, svu_zmq_dep],
+  include_directories: [svu_local_inc, ci_inc],
+  override_options: svu_opts,
+  install: false)
+
+executable('svu', 'svu_push.c',
+  link_with: [svu_net_lib, svu_serve_lib],
   dependencies: [svu_csp_dep, threads_dep, ci_dep, svu_zmq_dep],
   include_directories: [svu_local_inc, ci_inc],
   override_options: svu_opts,
@@ -51,8 +75,8 @@ apm_slash_dep = dependency('slash',   fallback: ['slash', 'slash_dep'], required
 apm_param_dep = dependency('param',   fallback: ['param', 'param_dep']).as_link_whole()
 
 shared_library('csh_svu', 'svu_apm.c',
-  link_with: svu_session_lib,
-  dependencies: [apm_csh_dep, apm_slash_dep, apm_param_dep, svu_csp_dep, ci_dep],
+  link_with: svu_serve_lib,
+  dependencies: [apm_csh_dep, apm_slash_dep, apm_param_dep, svu_csp_dep, ci_dep, threads_dep],
   include_directories: [svu_local_inc, ci_inc],
   override_options: ['c_std=gnu11', 'warning_level=2', 'werror=true', 'b_lundef=false'],
   install: true)

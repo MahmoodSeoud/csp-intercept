@@ -17,9 +17,14 @@ run /home/mseo/thesis/csp-intercept/experiments/exp_svu.csh
 | Arm | File | Uploader | Target | Verify |
 |---|---|---|---|---|
 | CSH RDP | `exp_rdp.csh` | `upload`/`download` (vmem) | node 5431 `bigmem` | expect **OK** |
-| Deployed DTP (pull) | `exp_dtp_pull.csh` | `dtp_client` | host file | **FAILED** under loss |
-| Deployed DTP (push) | `exp_upload_file.csh` | `upload_file` | payload file | none (lands on payload) |
+| Deployed DTP (push) | `exp_upload_file.csh` | `upload_file` | payload file | silently corrupts under loss |
 | SVU | `exp_svu.csh` | `svu` (csh command) | `svu_daemon` | expect **VERIFIED** |
+| ~~Deployed DTP (pull)~~ | ~~`exp_dtp_pull.csh`~~ | — | — | **RETIRED** — `dtp_client` is the DIPP downlink proxy, not the deployed upload path; use the push arm |
+
+The `svu` command is scp/cp-like: `svu -p <src> <dest>` uploads to the **default node**
+(set once with `node <addr>`), or `svu -p <src> <node>:<dest>` to name it explicitly.
+`-p` preserves the source mode (so a deployed binary lands executable); `svu_daemon`
+answers `ping` like any node.
 
 **RDP arm uses a purpose-built RAM oracle, not DIPP `stora`.** `stora` is only 10 KB
 (overflows a 256 KiB upload) and wedges under retransmit stress — both produce *false*

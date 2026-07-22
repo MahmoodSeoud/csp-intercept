@@ -1,17 +1,18 @@
 # exp_rdp.csh - CSH-RDP (CSP RDP + CRC32) integrity, clean single-shot. Runnable + reproducible.
 #
-# Uploads the pinned 256 KiB payload to the RAM oracle (node 5431, region bigmem, fixed
+# Uploads the pinned 256 KiB payload to the RAM node 'rdprx' (node 5431, region bigmem, fixed
 # address 0x10000000) over CSP RDP, checks integrity with crc32, and downloads it back.
 # Clean link => crc32 prints "Success". RDP+CRC32 never silently corrupts: it delivers
 # intact (Success) or fails loudly.
 #
 #   run /home/mseo/thesis/csp-intercept/experiments/exp_rdp.csh
 #
-# PREREQ: the oracle node up ->  scripts/bringup-vmem-node   (serves bigmem at fixed 0x10000000)
-# For the controlled LOSS SWEEP (injector, stock vs tuned RDP, dual oracle), from a shell:
+# PREREQ: the rdprx node up ->  scripts/bringup-vmem-node   (serves bigmem at fixed 0x10000000)
+# For the controlled LOSS SWEEP (injector, stock vs tuned RDP, crc + sha checks), from a shell:
 #   scripts/rdp-bigmem-sweep both "0.10 0.20 0.30" 3
 csp init
 csp add can -d 20
-upload   -v 2 -n 5431 -t 10000 /home/mseo/thesis/csp-intercept/captures/payload_256k.bin 0x10000000
-crc32    -n 5431 -v 2 -f /home/mseo/thesis/csp-intercept/captures/payload_256k.bin 0x10000000
-download -v 2 -n 5431 -t 10000 0x10000000 262144 rdp_got.bin
+node add -n 5431 rdprx
+upload   -v 2 -n rdprx -t 10000 /home/mseo/thesis/csp-intercept/captures/payload_256k.bin 0x10000000
+crc32    -n rdprx -v 2 -f /home/mseo/thesis/csp-intercept/captures/payload_256k.bin 0x10000000
+download -v 2 -n rdprx -t 10000 0x10000000 262144 rdp_got.bin

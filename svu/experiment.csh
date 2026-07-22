@@ -14,7 +14,7 @@
 #     sha256sum /tmp/svu_in.bin /tmp/svu_apm_out.bin      # the two hashes must match
 
 # load the SVU APM -> registers the `svu_get` command
-apm load -f libcsh_svu.so -p build-fe/svu
+apm load -f libcsh_svu.so -p /home/mseo/thesis/csp-intercept/build-fe/svu
 
 # pull the file node 25 is serving, block-verify it, write it out.
 # svu_get prints "VERIFIED <n> bytes in <r> round(s)" on success.
