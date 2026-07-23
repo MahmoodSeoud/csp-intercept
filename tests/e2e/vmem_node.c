@@ -69,14 +69,21 @@ int main(int argc, char **argv)
 {
     const char *dev = "can0";
     unsigned int addr = 5431;
+    /* bitrate 0 = leave the (already-up) can0 ALONE — just open a socket on it. Passing a
+     * positive bitrate makes the driver stop/reconfigure/start the link, which as root
+     * bounces the live bus and disrupts every other node. Default 0 is the safe choice on
+     * a shared flatsat; override with -B only on a dedicated interface. */
+    int bitrate = 0;
     int opt;
-    while ((opt = getopt(argc, argv, "c:a:h")) != -1) {
+    while ((opt = getopt(argc, argv, "c:a:B:h")) != -1) {
         switch (opt) {
         case 'c': dev = optarg; break;
         case 'a': addr = (unsigned int)atoi(optarg); break;
+        case 'B': bitrate = atoi(optarg); break;
         case 'h':
         default:
-            printf("usage: %s -c <can-device> -a <address>\n", argv[0]);
+            printf("usage: %s -c <can-device> -a <address> [-B bitrate]\n"
+                   "  -B 0 (default) leaves the interface alone; >0 reconfigures it (bounces the bus)\n", argv[0]);
             return opt == 'h' ? 0 : 1;
         }
     }
@@ -84,7 +91,7 @@ int main(int argc, char **argv)
     csp_init();
 
     csp_iface_t *iface = NULL;
-    int err = csp_can_socketcan_open_and_add_interface(dev, "CAN", addr, 1000000, true, &iface);
+    int err = csp_can_socketcan_open_and_add_interface(dev, "CAN", addr, bitrate, true, &iface);
     if (err != CSP_ERR_NONE) {
         fprintf(stderr, "vmem_node: failed to open CAN [%s], error %d\n", dev, err);
         return 1;
