@@ -1,6 +1,11 @@
 # cspx — CSP link-assurance tool (spec)
 
-Status: DRAFT for eng-review · Owner: Mahmood · Immediate target: Tuesday demo
+> SUPERSEDED (2026-07-23) by `docs/csp-debugger-design.md`. This spec framed the
+> tool as a standalone verdict-emitter; office-hours reframed it as a gdb-style
+> CSP debugger APM where the operator (not the tool) draws the conclusion. Kept
+> for the reuse map and test strategy, which still apply. Read the new doc first.
+
+Status: SUPERSEDED · Owner: Mahmood · Immediate target: Tuesday demo
 Working name `cspx` is a placeholder (see Open Decisions).
 
 ## 1. Problem
